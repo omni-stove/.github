@@ -1,0 +1,46 @@
+name: Claude Code
+
+on:
+  workflow_call:
+    inputs:
+      prompt:
+        type: string
+        required: true
+      show-full-output:
+        type: boolean
+        default: false
+      model:
+        type: string
+        default: "claude-opus-4-6"
+      allowed-tools:
+        type: string
+        default: "Edit,Write,Read,Bash"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: ${{ inputs.show-full-output }}
+          claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed-tools }}"'
+          settings: |
+            {
+              "permissions": {
+                "deny": ["Bash(git push * main)", "Bash(git push * main:*)", "Bash(git push origin main)", "Bash(git push origin main:*)"]
+              }
+            }
+          prompt: ${{ inputs.prompt }}
