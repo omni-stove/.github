@@ -1,0 +1,41 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        type: string
+        required: true
+      working-directory:
+        type: string
+        required: true
+      node-version:
+        type: string
+        default: "24"
+      deploy-command:
+        type: string
+        default: "pnpm release"
+      install-filter:
+        type: string
+        default: ""
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: omni-stove/.github/actions/setup-pnpm-node@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+          install-filter: ${{ inputs.install-filter }}
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.deploy-command }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

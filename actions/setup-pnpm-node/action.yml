@@ -1,0 +1,42 @@
+name: Setup pnpm & Node.js
+description: Install pnpm, Node.js, and dependencies with caching
+
+inputs:
+  node-version:
+    description: Node.js version
+    default: "24"
+  frozen-lockfile:
+    description: Use --frozen-lockfile for pnpm install
+    default: "true"
+  install-filter:
+    description: pnpm --filter value (empty = all packages)
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Cache pnpm store
+      uses: actions/cache@v5
+      with:
+        path: ~/.local/share/pnpm/store/v3
+        key: pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        ARGS=""
+        if [ "${{ inputs.frozen-lockfile }}" = "true" ]; then
+          ARGS="$ARGS --frozen-lockfile"
+        fi
+        if [ -n "${{ inputs.install-filter }}" ]; then
+          ARGS="$ARGS --filter ${{ inputs.install-filter }}"
+        fi
+        pnpm install $ARGS

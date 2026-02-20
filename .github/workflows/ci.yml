@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "24"
+      lint-command:
+        type: string
+        default: "pnpm lint"
+      typecheck-command:
+        type: string
+        default: "pnpm typecheck"
+      test-command:
+        type: string
+        default: "pnpm test"
+      run-test:
+        type: boolean
+        default: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: omni-stove/.github/actions/setup-pnpm-node@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Lint
+        run: ${{ inputs.lint-command }}
+
+      - name: Type check
+        run: ${{ inputs.typecheck-command }}
+
+  test:
+    if: ${{ inputs.run-test }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: omni-stove/.github/actions/setup-pnpm-node@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Test
+        run: ${{ inputs.test-command }}

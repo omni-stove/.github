@@ -1,0 +1,30 @@
+name: Auto Merge
+
+on:
+  workflow_call:
+    inputs:
+      merge-labels:
+        type: string
+        default: "!prototype"
+      merge-method:
+        type: string
+        default: "squash"
+      delete-branch:
+        type: boolean
+        default: true
+
+jobs:
+  auto-merge:
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Auto merge
+        uses: pascalgn/automerge-action@v0.16.4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_LABELS: ${{ inputs.merge-labels }}
+          MERGE_METHOD: ${{ inputs.merge-method }}
+          MERGE_DELETE_BRANCH: ${{ inputs.delete-branch }}
