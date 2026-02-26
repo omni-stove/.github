@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup pnpm & Node.js
-        uses: omni-stove/.github/actions/setup-pnpm-node@v1
+        uses: omni-stove/.github/actions/setup-pnpm-node@main
         with:
           node-version: ${{ inputs.node-version }}
           install-filter: ${{ inputs.install-filter }}
