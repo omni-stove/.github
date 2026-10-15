@@ -1,0 +1,319 @@
+name: Agent Run
+description: |
+  コーディングエージェント (Claude Code / OpenAI Codex) を共通インターフェースで実行する。
+  呼び出し側は prompt / json-schema / allowed-tools などを渡し、provider を切り替えるだけで
+  どちらのエージェントでも同じ入出力で動く。スクリプトは全て bash + jq で、Node.js に依存しない。
+
+  認証は with ではなく env で受ける (composite action は secrets を直接参照できないため):
+    env:
+      ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN   (provider=claude のどちらか)
+      OPENAI_API_KEY                                (provider=codex)
+      AGENT_GITHUB_TOKEN                            (任意。github-token 入力が空のときに使う)
+
+inputs:
+  # ── 用途に固有な入力 ─────────────────────────────────────────────────
+  prompt:
+    description: エージェントへのタスク指示
+    required: true
+  provider:
+    description: 実行する provider (claude | codex)
+    required: false
+    default: "claude"
+  tier:
+    description: >
+      モデルの tier (max | high | medium | low)。provider ごとの最新世代のモデルに解決する
+      (max → fable / astra、high → opus / sol、medium → sonnet / terra、low → haiku / luna。Claude / Codex の順)。
+    required: false
+    default: "high"
+  model:
+    description: モデルを直接指定する (空なら tier から解決する)
+    required: false
+    default: ""
+  effort:
+    description: 共通の推論 effort (low | medium | high | xhigh | max)。空なら provider の既定値
+    required: false
+    default: ""
+  json-schema:
+    description: 構造化出力の JSON Schema (文字列)。指定時は structured-output に schema 準拠 JSON が入る
+    required: false
+    default: ""
+  system-prompt:
+    description: 追記するシステムプロンプト (append)。例 "Always output in Japanese."
+    required: false
+    default: ""
+  allowed-tools:
+    description: 許可ツール (Claude 形式の Tool または Bash(pattern)、カンマ区切り)。両 provider に適用する
+    required: false
+    default: ""
+  disallowed-tools:
+    description: 禁止ツール。Codex では PreToolUse hook と hosted tool 設定へ変換する
+    required: false
+    default: ""
+  settings:
+    description: >
+      settings (JSON 文字列)。permissions.allow / deny は両 provider に適用する。
+      Codex に変換できないキーは無視せずエラーにする
+    required: false
+    default: ""
+  permission-profile:
+    description: 共通の実行権限 (read-only | workspace-write | danger-full-access)。空なら allowed-tools から推定
+    required: false
+    default: ""
+  extra-claude-args:
+    description: Claude 稼働時のみ有効な追加 claude_args (改行区切り)
+    required: false
+    default: ""
+  extra-codex-args:
+    description: Codex 稼働時のみ有効な追加 codex-args
+    required: false
+    default: ""
+  allowed-bots:
+    description: allowed_bots (Claude) / allow-bot-users (Codex) 相当。'*' で全 bot
+    required: false
+    default: ""
+  show-full-output:
+    description: Claude の show_full_output。Codex では無視
+    required: false
+    default: "false"
+  codex-version:
+    description: Codex CLI のバージョン。空なら openai/codex-action の既定値
+    required: false
+    default: ""
+  safety-strategy:
+    description: Codex runner の安全化方式
+    required: false
+    default: "drop-sudo"
+  github-token:
+    description: GitHub トークン。空なら env AGENT_GITHUB_TOKEN → GITHUB_TOKEN を拾う
+    required: false
+    default: ""
+  rate-limit-retry-max-wait-seconds:
+    description: >
+      Claude が GitHub API のレート制限で失敗したとき、解除まで待って 1 回だけ再実行する待ち時間の上限 (秒)。
+      '0' なら再実行しない。ジョブの timeout-minutes に収まる値にする
+    required: false
+    default: "0"
+
+outputs:
+  structured-output:
+    description: json-schema を渡したときの構造化出力 (JSON 文字列)。provider 差を吸収済み
+    value: ${{ steps.collect.outputs.structured_output }}
+  text-output:
+    description: エージェントの最終メッセージ本文
+    value: ${{ steps.collect.outputs.text_output }}
+  provider:
+    description: 実際に実行した provider
+    value: ${{ steps.collect.outputs.provider }}
+  model:
+    description: 実際に渡したモデル
+    value: ${{ steps.model.outputs.model }}
+  output-file:
+    description: 最終メッセージを保存したファイル
+    value: ${{ steps.collect.outputs.output_file }}
+  execution-file:
+    description: 進捗・tool call を含む実行 JSONL。機密情報を含み得るため公開 artifact 化は呼び出し側で判断する
+    value: ${{ steps.collect.outputs.execution_file }}
+  rate-limited:
+    description: Claude の失敗時に GitHub API のレート制限が枯渇していたら 'true'
+    value: ${{ steps.rate-limit-wait.outputs.rate_limited }}
+  rate-limit-reset:
+    description: 枯渇していた bucket の解除時刻 (epoch 秒)。枯渇していなければ空
+    value: ${{ steps.rate-limit-wait.outputs.reset }}
+
+runs:
+  using: composite
+  steps:
+    # GitHub トークンは input 優先、無ければ env AGENT_GITHUB_TOKEN → GITHUB_TOKEN。
+    - name: Resolve GitHub token
+      id: gh-token
+      shell: bash
+      env:
+        INPUT_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        tok="${INPUT_TOKEN:-}"
+        [ -z "$tok" ] && tok="${AGENT_GITHUB_TOKEN:-}"
+        [ -z "$tok" ] && tok="${GITHUB_TOKEN:-}"
+        echo "::add-mask::$tok"
+        echo "token=$tok" >> "$GITHUB_OUTPUT"
+
+    # App のレート制限をどのジョブが消費しているかを追うため、実行前後の残量を記録する。
+    - name: Record GitHub API rate limit (before)
+      id: rate-limit-before
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.gh-token.outputs.token }}
+        PHASE: before
+      run: bash "$GITHUB_ACTION_PATH/rate-limit-snapshot.sh"
+
+    - name: Resolve model
+      id: resolve-model
+      if: inputs.model == ''
+      shell: bash
+      env:
+        PROVIDER: ${{ inputs.provider }}
+        TIER: ${{ inputs.tier }}
+      run: bash "$GITHUB_ACTION_PATH/resolve-model.sh"
+
+    - name: Select model
+      id: model
+      shell: bash
+      env:
+        INPUT_MODEL: ${{ inputs.model }}
+        RESOLVED_MODEL: ${{ steps.resolve-model.outputs.model }}
+      run: echo "model=${INPUT_MODEL:-$RESOLVED_MODEL}" >> "$GITHUB_OUTPUT"
+
+    - name: Prepare provider-neutral inputs
+      id: prepare
+      shell: bash
+      env:
+        PROVIDER: ${{ inputs.provider }}
+        SYSTEM_PROMPT: ${{ inputs.system-prompt }}
+        PROMPT: ${{ inputs.prompt }}
+        JSON_SCHEMA: ${{ inputs.json-schema }}
+        ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
+        DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
+        SETTINGS: ${{ inputs.settings }}
+        ALLOWED_BOTS: ${{ inputs.allowed-bots }}
+        PERMISSION_PROFILE: ${{ inputs.permission-profile }}
+        EFFORT: ${{ inputs.effort }}
+        EXTRA_CLAUDE_ARGS: ${{ inputs.extra-claude-args }}
+        EXTRA_CODEX_ARGS: ${{ inputs.extra-codex-args }}
+        GITHUB_ACTOR: ${{ github.actor }}
+      run: bash "$GITHUB_ACTION_PATH/prepare.sh"
+
+    - name: Run Claude Code
+      id: claude
+      if: inputs.provider == 'claude'
+      # レート制限なら待って再実行するため、ここでは止めない。再実行しない失敗は後段の step で落とす。
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      env:
+        OPENAI_API_KEY: ''
+      with:
+        # 認証は env から拾う (with に露出させない)。
+        anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+        claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+        github_token: ${{ steps.gh-token.outputs.token }}
+        show_full_output: ${{ inputs.show-full-output }}
+        allowed_bots: ${{ inputs.allowed-bots }}
+        settings: ${{ inputs.settings }}
+        claude_args: |
+          --model ${{ steps.model.outputs.model }}
+          ${{ inputs.effort != '' && format('--effort {0}', inputs.effort) || '' }}
+          ${{ steps.prepare.outputs.claude_tool_args }}
+          ${{ steps.prepare.outputs.system_prompt_file != '' && format('--append-system-prompt-file "{0}"', steps.prepare.outputs.system_prompt_file) || '' }}
+          ${{ steps.prepare.outputs.claude_schema_args }}
+          ${{ steps.prepare.outputs.claude_permission_args }}
+          ${{ steps.prepare.outputs.claude_skill_args }}
+          ${{ inputs.extra-claude-args }}
+        prompt: ${{ inputs.prompt }}
+
+    - name: Wait for GitHub API rate limit reset
+      id: rate-limit-wait
+      if: inputs.provider == 'claude' && steps.claude.outcome == 'failure'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.gh-token.outputs.token }}
+        MAX_WAIT_SECONDS: ${{ inputs.rate-limit-retry-max-wait-seconds }}
+      run: bash "$GITHUB_ACTION_PATH/rate-limit-wait.sh"
+
+    - name: Run Claude Code (retry after rate limit)
+      id: claude-retry
+      if: steps.rate-limit-wait.outputs.retry == 'true'
+      uses: anthropics/claude-code-action@v1
+      env:
+        OPENAI_API_KEY: ''
+      with:
+        anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
+        claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+        github_token: ${{ steps.gh-token.outputs.token }}
+        show_full_output: ${{ inputs.show-full-output }}
+        allowed_bots: ${{ inputs.allowed-bots }}
+        settings: ${{ inputs.settings }}
+        claude_args: |
+          --model ${{ steps.model.outputs.model }}
+          ${{ inputs.effort != '' && format('--effort {0}', inputs.effort) || '' }}
+          ${{ steps.prepare.outputs.claude_tool_args }}
+          ${{ steps.prepare.outputs.system_prompt_file != '' && format('--append-system-prompt-file "{0}"', steps.prepare.outputs.system_prompt_file) || '' }}
+          ${{ steps.prepare.outputs.claude_schema_args }}
+          ${{ steps.prepare.outputs.claude_permission_args }}
+          ${{ steps.prepare.outputs.claude_skill_args }}
+          ${{ inputs.extra-claude-args }}
+        prompt: ${{ inputs.prompt }}
+
+    - name: Fail when Claude failed
+      if: steps.claude.outcome == 'failure' && steps.claude-retry.outcome != 'success'
+      shell: bash
+      env:
+        RATE_LIMITED: ${{ steps.rate-limit-wait.outputs.rate_limited }}
+      run: |
+        if [ "${RATE_LIMITED}" = "true" ]; then
+          echo "::error::GitHub API のレート制限で Claude を実行できませんでした。"
+        fi
+        exit 1
+
+    # codex-action が drop-sudo する前に置く。root 所有なので Codex 自身は hook を書き換えられない。
+    - name: Install Codex tool-policy hook
+      if: inputs.provider == 'codex'
+      shell: bash
+      env:
+        SYSTEM_CONFIG_FILE: ${{ steps.prepare.outputs.codex_system_config_file }}
+      # 1 回目の drop-sudo 後は sudo が使えないため、同じ内容が既に置かれていれば何もしない。
+      run: |
+        if cmp -s "$SYSTEM_CONFIG_FILE" /etc/codex/config.toml; then
+          exit 0
+        fi
+        sudo install -D -o root -g root -m 644 "$SYSTEM_CONFIG_FILE" /etc/codex/config.toml
+
+    - name: Run Codex
+      id: codex
+      if: inputs.provider == 'codex'
+      # v1.12 は最終出力後も子プロセスの stdio close を待ち続けるため、修正版が出るまで固定する。
+      uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1.11
+      env:
+        ANTHROPIC_API_KEY: ''
+        CLAUDE_CODE_OAUTH_TOKEN: ''
+        GH_TOKEN: ${{ steps.gh-token.outputs.token }}
+        GITHUB_TOKEN: ${{ steps.gh-token.outputs.token }}
+      with:
+        openai-api-key: ${{ env.OPENAI_API_KEY }}
+        prompt: ${{ steps.prepare.outputs.prompt }}
+        model: ${{ steps.model.outputs.model }}
+        effort: ${{ inputs.effort }}
+        permission-profile: ${{ steps.prepare.outputs.codex_permission_profile }}
+        codex-home: ${{ steps.prepare.outputs.codex_home }}
+        codex-version: ${{ inputs.codex-version }}
+        safety-strategy: ${{ inputs.safety-strategy }}
+        output-schema-file: ${{ steps.prepare.outputs.schema_file }}
+        output-file: ${{ steps.prepare.outputs.output_file }}
+        # カスタム bot は allow-bot-users に名前で渡す必要がある。
+        allow-bots: ${{ inputs.allowed-bots != '' && 'true' || 'false' }}
+        allow-bot-users: ${{ steps.prepare.outputs.codex_bot_users }}
+        codex-args: ${{ inputs.extra-codex-args }}
+
+    # 出力の正規化: provider 差 (structured_output vs final-message) を吸収し、
+    # 共通の structured-output / text-output に揃える。稼働していない側の step は skip され outputs は空。
+    - name: Collect outputs
+      id: collect
+      shell: bash
+      env:
+        PROVIDER: ${{ inputs.provider }}
+        HAS_SCHEMA: ${{ inputs.json-schema != '' }}
+        CLAUDE_STRUCTURED: ${{ steps.claude-retry.outputs.structured_output || steps.claude.outputs.structured_output }}
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude-retry.outputs.execution_file || steps.claude.outputs.execution_file }}
+        CODEX_FINAL: ${{ steps.codex.outputs.final-message }}
+        SCHEMA_FILE: ${{ steps.prepare.outputs.schema_file }}
+        OUTPUT_FILE: ${{ steps.prepare.outputs.output_file }}
+        EXECUTION_FILE: ${{ steps.prepare.outputs.execution_file }}
+        CODEX_HOME: ${{ steps.prepare.outputs.codex_home }}
+      run: bash "$GITHUB_ACTION_PATH/collect.sh"
+
+    - name: Record GitHub API rate limit (after)
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.gh-token.outputs.token }}
+        PHASE: after
+        BEFORE: ${{ steps.rate-limit-before.outputs.snapshot }}
+      run: bash "$GITHUB_ACTION_PATH/rate-limit-snapshot.sh"

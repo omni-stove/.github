@@ -62,6 +62,46 @@ ci-gate:
         bypass-branch-prefixes: "revert-"  # default
 ```
 
+### `agent-run`
+
+コーディングエージェント (Claude Code / OpenAI Codex) を共通インターフェースで実行する。
+`provider` を切り替えるだけで、prompt / json-schema / allowed-tools / permission-profile は
+どちらでも同じ意味で動く。スクリプトは全て bash + jq (Node.js 不要)。
+
+```yaml
+- uses: omni-stove/.github/actions/agent-run@main
+  id: agent
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}            # provider=claude (または CLAUDE_CODE_OAUTH_TOKEN)
+    CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}                  # provider=codex
+    AGENT_GITHUB_TOKEN: ${{ github.token }}
+  with:
+    provider: claude            # claude | codex
+    tier: high                  # max | high | medium | low (provider ごとの最新世代に解決)
+    model: ""                   # 指定すると tier より優先
+    effort: ""                  # low | medium | high | xhigh | max
+    permission-profile: ""      # read-only | workspace-write | danger-full-access (空なら allowed-tools から推定)
+    allowed-tools: "Read,Grep,Bash(git diff:*)"
+    disallowed-tools: "WebFetch,WebSearch"
+    system-prompt: "Always output in Japanese."
+    json-schema: '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}'
+    prompt: "..."
+# steps.agent.outputs.structured-output / text-output / provider / model / execution-file
+```
+
+| 入力 | 説明 |
+| --- | --- |
+| `provider` | `claude` (既定) か `codex` |
+| `tier` / `model` / `effort` | tier は max→fable/astra、high→opus/sol、medium→sonnet/terra、low→haiku/luna に解決。model 指定時はそのまま渡す |
+| `allowed-tools` / `disallowed-tools` / `settings` | Claude 形式 (`Tool` / `Bash(pattern)`)。Codex では PreToolUse hook (`tool-policy-hook.sh`) と config に変換する。Codex に変換できない settings はエラー |
+| `permission-profile` | `read-only` では書き込み系ツールと安全でない Bash を両 provider で拒否する。Claude は `Bash(pattern)` を固定の読み取りコマンド (`git --no-optional-locks status` 等) に限る |
+| `json-schema` | 構造化出力を強制し、両 provider の出力を `validate-json-schema.jq` で検証する。違反なら失敗 |
+| `extra-claude-args` / `extra-codex-args` | provider 固有の追加引数。他方の provider では警告して無視 |
+| `rate-limit-retry-max-wait-seconds` | Claude が GitHub API のレート制限で落ちたら解除まで待って 1 回再実行する |
+
+テストは `actions/agent-run/*.bats` (`bats actions/agent-run`)。
+
 ### `fetch-review-diff` / `post-review-comments` / `finalize-review`
 
 `ci.yml` の Code Review が使う部品。自前のレビューワークフローを組むときにも使える。
@@ -118,7 +158,10 @@ jobs:
 | `run-test` | `true` | |
 | `gate` | `true` | `false` で CI Gate と finalize をこの workflow では走らせない (呼び出し側の `ci-gate.yml` に任せる) |
 | `run-review` | `false` | Claude Code によるコードレビューと approve / request-changes の提出を行う |
-| `review-model` | `"opus"` | `--model` |
+| `review-provider` | `"claude"` | レビューを実行するエージェント (`claude` / `codex`)。`agent-run` で切り替える |
+| `review-tier` | `"high"` | モデルの tier (max / high / medium / low) |
+| `review-model` | `""` | モデルを直接指定する (空なら tier から解決) |
+| `review-effort` | `""` | 推論 effort |
 | `review-max-turns` | `"80"` | `--max-turns` |
 | `review-allowed-bots` | `"*"` | bot が作った PR でもレビューを走らせる bot 名 (カンマ区切り)。公開リポジトリでは外部 App が起動できてしまうため、bot 名を列挙するか `""` にする |
 | `review-instructions` | `""` | レビュー指示に追記する文 (リポジトリ固有の観点や弱点) |
@@ -126,7 +169,8 @@ jobs:
 
 | secret | 必須 | 説明 |
 | --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `run-review` のとき | Claude Code の認証 |
+| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `review-provider: claude` のとき | Claude Code の認証 |
+| `OPENAI_API_KEY` | `review-provider: codex` のとき | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | 推奨 | レビューを投稿・approve する GitHub App。無ければ `github.token` を使う (下記参照) |
 
 `ci.yml` の outputs: `conflicted` / `review-comments` / `review-result` (`gate: false` のとき `ci-gate.yml` に渡す)。
@@ -138,7 +182,7 @@ jobs:
 - **コンフリクト PR** は lint / test / review を走らせない。解消で `synchronize` が飛び、CI が再実行される。
 - **緊急避難口**: `hotfix` / `revert` ラベル、または `revert-` ブランチの PR は lint / test / review をスキップし、
   CI Gate は素通しで success になる。request-changes によるマージブロックは `hotfix-revert-approve.yml` が外す。
-- **Code Review** は Claude Code が指摘を構造化出力で返し、インラインコメントとして投稿する。コメントの
+- **Code Review** は `agent-run` (Claude Code / Codex) が指摘を構造化出力で返し、インラインコメントとして投稿する。コメントの
   投稿に失敗した run は CI Gate を通過しない。マージコミット (Update Branch) と、除外後にレビュー対象が
   残らない PR ではレビューをスキップする。
 - **finalize** は lint / test に failure があれば指摘 0 件でも request-changes、無ければ指摘件数で決める
@@ -297,7 +341,8 @@ jobs:
 
 ### `claude-code.yml`
 
-Run Claude Code with a prompt.
+コーディングエージェントに prompt を渡して実行する (`agent-run` 経由。provider は切り替え可)。
+main への直接 push は deny している。
 
 ```yaml
 jobs:
@@ -305,8 +350,10 @@ jobs:
     uses: omni-stove/.github/.github/workflows/claude-code.yml@main
     with:
       prompt: "..."
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      provider: claude          # claude | codex
+      tier: high
+      allowed-tools: "Edit,Write,Read,Bash"
+    secrets: inherit            # CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / OPENAI_API_KEY
 ```
 
 ## GitHub App の設定 (CI Gate 用)

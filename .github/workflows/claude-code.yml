@@ -1,4 +1,8 @@
-name: Claude Code
+name: Agent Run
+
+# コーディングエージェントに prompt を渡して実行する reusable workflow。
+# provider (claude | codex) は入力で切り替えられる (actions/agent-run)。
+# main への直接 push は settings の deny で禁止する。
 
 on:
   workflow_call:
@@ -6,18 +10,39 @@ on:
       prompt:
         type: string
         required: true
-      show-full-output:
-        type: boolean
-        default: false
-      model:
+      provider:
+        description: 実行する provider (claude | codex)
         type: string
-        default: "claude-opus-4-6"
+        default: "claude"
+      tier:
+        description: モデルの tier (max | high | medium | low)
+        type: string
+        default: "high"
+      model:
+        description: モデルを直接指定する (空なら tier から解決する)
+        type: string
+        default: ""
+      effort:
+        description: 推論 effort (low | medium | high | xhigh | max)。空なら provider の既定値
+        type: string
+        default: ""
       allowed-tools:
         type: string
         default: "Edit,Write,Read,Bash"
+      permission-profile:
+        description: read-only | workspace-write | danger-full-access (空なら allowed-tools から推定)
+        type: string
+        default: ""
+      show-full-output:
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
 
 jobs:
   run:
@@ -32,11 +57,20 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: omni-stove/.github/actions/agent-run@main
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENT_GITHUB_TOKEN: ${{ github.token }}
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: ${{ inputs.show-full-output }}
-          claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed-tools }}"'
+          provider: ${{ inputs.provider }}
+          tier: ${{ inputs.tier }}
+          model: ${{ inputs.model }}
+          effort: ${{ inputs.effort }}
+          allowed-tools: ${{ inputs.allowed-tools }}
+          permission-profile: ${{ inputs.permission-profile }}
+          show-full-output: ${{ inputs.show-full-output }}
           settings: |
             {
               "permissions": {

@@ -68,10 +68,22 @@ on:
         description: Claude Code によるコードレビューと approve / request-changes の提出を行うか
         type: boolean
         default: false
-      review-model:
-        description: レビューに使うモデル (claude_args の --model)
+      review-provider:
+        description: レビューを実行するエージェント (claude | codex)。actions/agent-run で切り替える
         type: string
-        default: "opus"
+        default: "claude"
+      review-tier:
+        description: モデルの tier (max | high | medium | low)。provider ごとの最新世代に解決する
+        type: string
+        default: "high"
+      review-model:
+        description: モデルを直接指定する (空なら review-tier から解決する)
+        type: string
+        default: ""
+      review-effort:
+        description: 推論 effort (low | medium | high | xhigh | max)。空なら provider の既定値
+        type: string
+        default: ""
       review-max-turns:
         description: レビューの最大ターン数 (--max-turns)
         type: string
@@ -92,6 +104,8 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
       ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
         required: false
       REVIEWER_GH_APP_ID:
         required: false
@@ -234,7 +248,7 @@ jobs:
       HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
     outputs:
       # finalize が参照する。review ステップがスキップ / 失敗したときは comments が空になる。
-      comments: ${{ steps.review.outputs.structured_output }}
+      comments: ${{ steps.review.outputs.structured-output }}
       result: ${{ steps.review.outcome }}
     steps:
       # マージコミット (Update Branch) 時はスキップ。レビュー対象の変更が無いため。
@@ -272,24 +286,28 @@ jobs:
           exclude-patterns: ${{ inputs.review-exclude-patterns }}
 
       # 指摘は json-schema で {"comments":[{path,line,category,body}]} に強制する。
-      # 既存実装との整合性判定で作業ツリーの読み取りが要るため、書き込み系ツールだけ禁止する。
+      # 既存実装との整合性判定で作業ツリーの読み取りが要るため、agent-run は read-only で実行する。
       # diff が除外フィルタの結果 empty=true なら、中身のない diff をエージェントに渡さずスキップする。
+      # provider (Claude / Codex) は review-provider で切り替える。認証は env で渡す。
       - name: Run Code Review
         id: review
         if: steps.check.outputs.skip != 'true' && steps.diff.outputs.empty != 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: omni-stove/.github/actions/agent-run@main
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENT_GITHUB_TOKEN: ${{ github.token }}
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ github.token }}
-          allowed_bots: ${{ inputs.review-allowed-bots }}
-          show_full_output: false
-          claude_args: |
-            --model ${{ inputs.review-model }}
-            --max-turns ${{ inputs.review-max-turns }}
-            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent,TodoWrite"
-            --append-system-prompt "Always output in Japanese."
-            --json-schema '{"type":"object","properties":{"comments":{"type":"array","description":"修正必須の指摘。","items":{"type":"object","properties":{"path":{"type":"string","description":"変更行を含むファイル。"},"line":{"type":"integer","description":"対象の追加行。"},"category":{"type":"string","enum":["security","correctness","performance","consistency"],"description":"主因。複数なら影響が最大のもの。"},"body":{"type":"string","description":"指摘。security は該当する OWASP Top 10 / CWE 項目で始める。特定できない番号は書かない。"}},"required":["path","line","category","body"],"additionalProperties":false}}},"required":["comments"],"additionalProperties":false}'
+          provider: ${{ inputs.review-provider }}
+          tier: ${{ inputs.review-tier }}
+          model: ${{ inputs.review-model }}
+          effort: ${{ inputs.review-effort }}
+          allowed-bots: ${{ inputs.review-allowed-bots }}
+          disallowed-tools: "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent,TodoWrite"
+          system-prompt: "Always output in Japanese."
+          extra-claude-args: "--max-turns ${{ inputs.review-max-turns }}"
+          json-schema: '{"type":"object","properties":{"comments":{"type":"array","description":"修正必須の指摘。","items":{"type":"object","properties":{"path":{"type":"string","description":"変更行を含むファイル。"},"line":{"type":"integer","description":"対象の追加行。"},"category":{"type":"string","enum":["security","correctness","performance","consistency"],"description":"主因。複数なら影響が最大のもの。"},"body":{"type":"string","description":"指摘。security は該当する OWASP Top 10 / CWE 項目で始める。特定できない番号は書かない。"}},"required":["path","line","category","body"],"additionalProperties":false}}},"required":["comments"],"additionalProperties":false}'
           prompt: |
             <pr_description>
             ${{ steps.diff.outputs.pr_description }}
@@ -369,7 +387,7 @@ jobs:
         with:
           pr-number: ${{ github.event.pull_request.number }}
           commit: ${{ github.event.pull_request.head.sha }}
-          comments-json: ${{ steps.review.outputs.structured_output }}
+          comments-json: ${{ steps.review.outputs.structured-output }}
           review-result: ${{ steps.review.outcome }}
           github-token: ${{ steps.reviewer-token.outputs.token || github.token }}
           reviewer-login: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}
