@@ -1,7 +1,7 @@
 name: Issue Worker
 
 # Issue にラベルが付いたらコーディングエージェントが着手し、編集を PR にする reusable workflow。
-# ラベルごとの動きと呼び出し方は README を参照。ラベル → モードの対応は actions/resolve-issue が持つ。
+# ラベルごとの動きは actions/resolve-issue が持つ。
 #
 # 発火は labeled 一本に統一する。GitHub はラベル付きで作成された Issue に対しても opened と
 # labeled を別々に送るため、opened でもラベルを見ると同じ Issue に job が二重に走り、同名

@@ -17,10 +17,10 @@ run = "skill-kit code update"
 [lint]
 description = "Lint the shell scripts with shellcheck and the workflows with actionlint"
 run = [
-  "shellcheck -S warning install.sh actions/*/*.sh",
+  "shellcheck -S warning install.sh skill.sh actions/*/*.sh",
   "actionlint",
 ]
 
 [test]
-description = "Run the bats tests (install.bats and the actions' *.bats)"
-run = "bats install.bats actions/agent-run actions/agent-regen actions/create-issue-pr actions/resolve-issue"
+description = "Run the bats tests (install.bats, skill.bats and the actions' *.bats)"
+run = "bats install.bats skill.bats actions/agent-run actions/agent-regen actions/create-issue-pr actions/resolve-issue"

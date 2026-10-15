@@ -12,7 +12,7 @@ inputs:
   results:
     description: |
       集約するジョブの結果。次のどちらかの形式で渡す。
-        - `${{ toJSON(needs) }}` (JSON オブジェクト)
+        - needs を toJSON した JSON オブジェクト
         - 1 行 1 件の `name=result` または `result` (success / failure / skipped / cancelled)
     required: true
   bypass-labels:

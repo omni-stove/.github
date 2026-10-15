@@ -4,7 +4,7 @@ name: Hotfix/Revert Approve
 # reviewer App で approve を出して CI の request-changes によるマージブロックを外す。
 # GitHub の Revert ボタンで生成された revert- ブランチの PR は、ラベルがなくても
 # opened / reopened で同じ処理を行う。以降の push では ci.yml が changes をスキップし、
-# CI Gate は素通しで success になる。呼び出し方は README を参照。
+# CI Gate は素通しで success になる。
 
 on:
   workflow_call:

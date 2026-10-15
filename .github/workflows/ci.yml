@@ -1,7 +1,7 @@
 name: CI
 
 # Lint / Test / Code Review を並列に走らせ、全結果を "CI Gate" という単一の必須チェックに集約する
-# reusable workflow。呼び出し方と挙動は README を参照。
+# reusable workflow。
 #
 # - lint / test / review は互いに needs で繋がない (並列・fail-fast しない)。
 #   CI Gate と finalize だけが needs: [全部] で待ち合わせる。
