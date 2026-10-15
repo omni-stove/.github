@@ -1,0 +1,26 @@
+[install]
+description = "Install the repo's dependencies (none beyond the tools in mise.toml)"
+run = ":"
+
+[setup]
+description = "Install dependencies and skill-kit, then sync (run by make setup)"
+depends = ["install"]
+run = [
+  "gh api repos/omni-stove/skill-kit/contents/install.sh -q .content | base64 -d | sh",
+  "skill-kit code sync",
+]
+
+[update]
+description = "Pull skill-kit and re-sync this repo"
+run = "skill-kit code update"
+
+[lint]
+description = "Lint the shell scripts with shellcheck and the workflows with actionlint"
+run = [
+  "shellcheck -S warning install.sh actions/*/*.sh",
+  "actionlint",
+]
+
+[test]
+description = "Run the bats tests (install.bats and actions/agent-run)"
+run = "bats install.bats actions/agent-run"

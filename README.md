@@ -2,6 +2,34 @@
 
 Organization-wide GitHub Actions for omni-stove.
 
+## 利用側リポジトリへの導入 (一撃)
+
+利用側リポジトリのルートで 1 行。CI Gate の呼び出し workflow (`ci.yml` / `hotfix-revert-approve.yml`) を書き、
+`hotfix` / `revert` ラベルを作り、secrets の有無を確認して、残りの手作業を `todo` として並べる。
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/omni-stove/.github/main/install.sh | bash -s -- --review --ruleset
+# private のときは gh 経由
+gh api repos/omni-stove/.github/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash -s -- --review --ruleset
+```
+
+| option | 説明 |
+| --- | --- |
+| `--review` | Code Review (`run-review: true`) を有効にする |
+| `--provider claude\|codex` | レビューの provider (既定: claude) |
+| `--auto-merge` | `auto-merge.yml` も入れる |
+| `--ruleset` | 既定ブランチに `ci / CI Gate` を必須チェックにする ruleset "CI Gate" を作る (同名があれば更新。admin 権限が要る) |
+| `--ref <ref>` | `omni-stove/.github` の参照 (既定: `main`) |
+| `--force` | 既存の workflow ファイルを上書きする |
+| `--no-labels` | ラベルを作らない |
+
+検出するもの: `mise.toml` (`node = "..."`) → Node.js バージョン、`package.json` の `lint` / `typecheck` / `test` script →
+各コマンド (無ければ `echo "skip: ..."` または `run-test: false` にして `todo` を出す)、`origin/HEAD` または gh → 既定ブランチ、
+リポジトリの公開/非公開 → 公開なら `review-allowed-bots: ""`。
+
+依存は bash と git だけ。gh でログインしていればラベル / secrets 確認 / ruleset まで行い、無ければ `todo` に落とす。
+テストは `bats install.bats`。
+
 ## Composite Actions
 
 ### `setup-pnpm-node`
