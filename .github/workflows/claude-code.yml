@@ -8,6 +8,7 @@ on:
   workflow_call:
     inputs:
       prompt:
+        description: エージェントへのタスク指示
         type: string
         required: true
       provider:
@@ -27,6 +28,7 @@ on:
         type: string
         default: ""
       allowed-tools:
+        description: エージェントに許可するツール (Claude 形式、カンマ区切り)
         type: string
         default: "Edit,Write,Read,Bash"
       permission-profile:
@@ -34,6 +36,7 @@ on:
         type: string
         default: ""
       show-full-output:
+        description: エージェントの出力全文をログに出すか (Claude のみ)
         type: boolean
         default: false
     secrets:

@@ -1,29 +1,7 @@
 name: CI Gate
 
 # 呼び出し側に独自の test ジョブがあるときに、ci.yml (gate: false) と test ジョブの結果を
-# まとめて CI Gate と finalize にする reusable workflow。
-#
-# 呼び出し側:
-#   jobs:
-#     ci:
-#       uses: omni-stove/.github/.github/workflows/ci.yml@main
-#       with: { run-test: false, gate: false, run-review: true }
-#       secrets: inherit
-#     test-unit: ...   # 自由に書く (services / container も可)
-#     test-e2e: ...
-#     gate:
-#       needs: [ci, test-unit, test-e2e]
-#       if: always()
-#       uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
-#       permissions: { contents: read, pull-requests: write }
-#       with:
-#         results: ${{ toJSON(needs) }}
-#         conflicted: ${{ needs.ci.outputs.conflicted }}
-#         review-comments: ${{ needs.ci.outputs.review-comments }}
-#         review-result: ${{ needs.ci.outputs.review-result }}
-#       secrets: inherit
-#
-# 必須チェックには "gate / CI Gate" を登録する。
+# まとめて CI Gate と finalize にする reusable workflow。呼び出し方は README を参照。
 
 on:
   workflow_call:

@@ -4,12 +4,15 @@ on:
   workflow_call:
     inputs:
       merge-labels:
+        description: マージ対象を絞るラベル (pascalgn/automerge-action の MERGE_LABELS。"!" 始まりは除外)
         type: string
         default: "!prototype"
       merge-method:
+        description: merge | squash | rebase
         type: string
         default: "squash"
       delete-branch:
+        description: マージ後に head ブランチを削除するか
         type: boolean
         default: true
 

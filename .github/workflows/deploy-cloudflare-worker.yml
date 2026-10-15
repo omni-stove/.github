@@ -4,18 +4,23 @@ on:
   workflow_call:
     inputs:
       app-name:
+        description: デプロイするアプリ名 (ジョブ名に表示する)
         type: string
         required: true
       working-directory:
+        description: deploy-command を実行するディレクトリ
         type: string
         required: true
       node-version:
+        description: Node.js のバージョン
         type: string
         default: "24"
       deploy-command:
+        description: デプロイコマンド
         type: string
         default: "pnpm release"
       install-filter:
+        description: pnpm install --filter の値 (空なら全パッケージ)
         type: string
         default: ""
     secrets:
@@ -24,6 +29,7 @@ on:
 
 jobs:
   deploy:
+    name: Deploy ${{ inputs.app-name }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

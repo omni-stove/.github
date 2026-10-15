@@ -1,34 +1,17 @@
 name: Issue Worker
 
 # Issue にラベルが付いたらコーディングエージェントが着手し、編集を PR にする reusable workflow。
-#   bug            → 修正 PR                    (agent-fix/issue-<n>)
-#   security       → 指摘箇所だけ直す修正 PR    (agent-security-fix/issue-<n>、security ラベル)
-#   prototype      → モックで良い試作の draft PR (agent-proto/issue-<n>、prototype ラベル)
-#   implementation → 本実装 PR                  (agent-implement/issue-<n>)
+# ラベルごとの動きと呼び出し方は README を参照。ラベル → モードの対応は actions/resolve-issue が持つ。
+#
 # 発火は labeled 一本に統一する。GitHub はラベル付きで作成された Issue に対しても opened と
 # labeled を別々に送るため、opened でもラベルを見ると同じ Issue に job が二重に走り、同名
-# ブランチへの push が衝突する。ラベル付与が着手の合図なので、Issue を書けるだけの人は起動できない。
+# ブランチへの push が衝突する。
 #
-# エージェントは編集だけを担当し (依存の install・テスト・lint・commit・push はしない)、
-# ブランチ・ラベル・draft・PR 文面の整形は決定論的に step で確定する (actions/resolve-issue /
-# actions/create-issue-pr)。PR の文面はエージェントの構造化出力から取る。
+# エージェントは編集だけを担当し、ブランチ・ラベル・draft・PR 文面の整形は決定論的に step で確定する
+# (actions/resolve-issue / actions/create-issue-pr)。
 #
-# 呼び出し側:
-#   on:
-#     issues:
-#       types: [labeled]
-#   jobs:
-#     work:
-#       uses: omni-stove/.github/.github/workflows/issue-worker.yml@main
-#       permissions:
-#         contents: write
-#         pull-requests: write
-#         issues: write
-#         id-token: write
-#       secrets: inherit
-#
-# PR を作るトークンに AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY (reviewer とは別の App) を
-# 渡すと、作った PR の pull_request イベントで CI が起動する (github.token で作った PR では起動しない)。
+# PR を作るトークンは agent 用 GitHub App (reviewer とは別) を優先する。github.token で作った PR では
+# pull_request イベントで CI が起動しないため。
 
 on:
   workflow_call:

@@ -21,11 +21,11 @@ usage: install.sh [options]
   --review             Code Review (run-review: true) を有効にする
   --provider <name>    レビューの provider (claude | codex)。既定: claude
   --auto-merge         auto-merge.yml も入れる (既にあれば指定しなくても更新する)
-  --issue-worker       issue-worker.yml (Issue にラベルを付けるとエージェントが PR を作る) も入れる (既にあれば指定しなくても更新する)
-  --ruleset            既定ブランチに "ci / CI Gate" を必須チェックにする ruleset を作る (gh が必要)
+  --issue-worker       issue-worker.yml (Issue にラベルを付けるとエージェントが PR を作る) も入れ、prototype / implementation / security ラベルを作る (既にあれば指定しなくても更新する)
+  --ruleset            既定ブランチに "ci / CI Gate" を必須チェックにする ruleset "CI Gate" を作る (同名があれば更新。gh と admin 権限が必要)
   --ref <ref>          omni-stove/.github の参照 (既定: 既存 workflow の参照、無ければ main)
   --force              既存の設定を引き継がず検出結果から書き直す (install.sh 以外が作ったファイルも上書きする)
-  --no-labels          hotfix / revert ラベルを作らない
+  --no-labels          ラベルを作らない
   -h, --help           このヘルプ
 USAGE
 }
@@ -372,11 +372,11 @@ if [ "$GH_OK" = true ]; then
 	fi
 	if [ "$REVIEW" = true ]; then
 		{ has_secret REVIEWER_GH_APP_ID && has_secret REVIEWER_GH_APP_PRIVATE_KEY; } && say secret "REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY" \
-			|| todo "reviewer 用 GitHub App の REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY を secrets に置く (無いと bot の PR に approve できない): https://github.com/${ORG_REPO}#github-app-の設定-ci-gate-用"
+			|| todo "reviewer 用 GitHub App の REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY を secrets に置く (無いと bot の PR に approve できない): https://github.com/${ORG_REPO}#reviewer-app"
 	fi
 	if [ "$ISSUE_WORKER" = true ]; then
 		{ has_secret AGENT_GH_APP_ID && has_secret AGENT_GH_APP_PRIVATE_KEY; } && say secret "AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY" \
-			|| todo "PR を作る agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動しない): https://github.com/${ORG_REPO}#pr-を作る-agent-用の-app"
+			|| todo "PR を作る agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動しない): https://github.com/${ORG_REPO}#agent-app"
 	fi
 else
 	[ "$REVIEW" != true ] || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), REVIEWER_GH_APP_ID, REVIEWER_GH_APP_PRIVATE_KEY"

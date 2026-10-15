@@ -1,46 +1,26 @@
 name: CI
 
-# Lint / Test / Code Review を 1 つの reusable workflow に統合し、全結果を "CI Gate" という
-# 単一の必須チェックに集約する。
+# Lint / Test / Code Review を並列に走らせ、全結果を "CI Gate" という単一の必須チェックに集約する
+# reusable workflow。呼び出し方と挙動は README を参照。
 #
-#   changes ─┬─ lint ───┬─ CI Gate   (必須チェック: failure / cancelled が 1 つでもあれば失敗)
-#            ├─ test ───┤
-#            └─ review ─┴─ finalize  (approve / request-changes を提出。run-review のときだけ)
-#
-# - changes はコンフリクト判定だけを行う。コンフリクト PR ではどうせマージできないので
-#   lint / test / review を一切走らせない。
 # - lint / test / review は互いに needs で繋がない (並列・fail-fast しない)。
 #   CI Gate と finalize だけが needs: [全部] で待ち合わせる。
-# - hotfix / revert ラベル、revert- ブランチは緊急避難口。changes がスキップされて
-#   lint / test / review も連鎖スキップされ、CI Gate は素通しで success になる。
-# - review は Claude Code が指摘を構造化出力 ({"comments":[...]}) で返し、インラインコメント
-#   として投稿する。finalize が lint / test の結果と指摘件数から approve / request-changes を
-#   決める (テストが落ちている PR を approve しない)。
-# - approve は PR 作成者とは別の identity が必要なため、reviewer 用 GitHub App の secrets
-#   (REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY) を渡す。無ければ github.token で投稿する
-#   (github-actions[bot] が作った PR には approve できない)。
-#
-# test はアプリごとに差し替えられる:
-#   - test-command: 単一コマンド (既定)
-#   - test-jobs: JSON 配列で複数の test ジョブを定義する (name / command / setup / workingDirectory /
-#     runsOn / nodeVersion / installFilter / timeoutMinutes)。matrix で並列に走り、どれか 1 つでも
-#     落ちれば test ジョブは failure になる。
-#   - run-test: false + gate: false: 呼び出し側で自由に test ジョブを書き、ci-gate.yml に
-#     全ジョブの結果を渡して CI Gate と finalize を呼び出し側に置く (services / container が
-#     要るときなど)。
-#
-# ruleset の必須チェックには "<呼び出し側 job 名> / CI Gate" だけを登録する。
+# - approve は PR 作成者とは別の identity が必要なため、reviewer 用 GitHub App の secrets を受ける。
+#   無ければ github.token で投稿する (github-actions[bot] が作った PR には approve できない)。
 
 on:
   workflow_call:
     inputs:
       node-version:
+        description: lint / test で使う Node.js のバージョン
         type: string
         default: "24"
       lint-command:
+        description: lint ジョブで実行するコマンド
         type: string
         default: "pnpm lint"
       typecheck-command:
+        description: lint ジョブで lint-command の後に実行するコマンド
         type: string
         default: "pnpm typecheck"
       test-command:
@@ -49,13 +29,20 @@ on:
         default: "pnpm test"
       test-jobs:
         description: |
-          test ジョブの定義 (JSON 配列)。指定すると test-command は使わない。
-          各要素: {"name": "unit", "command": "pnpm test", "setup": "...", "workingDirectory": ".",
-                   "runsOn": "ubuntu-latest", "nodeVersion": "24", "installFilter": "", "timeoutMinutes": 30}
-          name と command 以外は省略可。
+          test ジョブの定義 (JSON 配列)。指定すると test-command は使わない。各要素が matrix で並列に走り
+          ("Test (<name>)" として表示)、どれか 1 つでも落ちれば test ジョブは failure になる。
+            name             ジョブ名 (必須)
+            command          test コマンド (必須)
+            setup            command の前に実行するコマンド (ブラウザのインストール等)
+            workingDirectory setup / command の作業ディレクトリ (既定: ".")
+            runsOn           runner (既定: "ubuntu-latest")
+            nodeVersion      Node.js のバージョン (既定: node-version 入力)
+            installFilter    pnpm install --filter の値
+            timeoutMinutes   ジョブのタイムアウト (既定: 30)
         type: string
         default: ""
       run-test:
+        description: test ジョブを走らせるか。false なら test は skipped になり、CI Gate は失敗にしない
         type: boolean
         default: true
       gate:
@@ -89,7 +76,9 @@ on:
         type: string
         default: "80"
       review-allowed-bots:
-        description: bot が作った PR でもレビューを走らせる bot 名 (カンマ区切り。'*' で全て)
+        description: >
+          bot が作った PR でもレビューを走らせる bot 名 (カンマ区切り。'*' で全て)。
+          公開リポジトリでは外部 App の PR でもレビューが起動してしまうため、bot 名を列挙するか "" にする
         type: string
         default: "*"
       review-instructions:

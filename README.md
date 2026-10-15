@@ -1,16 +1,14 @@
 # .github
 
-Organization-wide GitHub Actions for omni-stove.
+omni-stove の共通 GitHub Actions (reusable workflow と composite action)。
 
-## 利用側リポジトリへの導入 (一撃)
+各 workflow / action の入力・出力・secrets とその既定値は、その yml の `inputs` / `outputs` / `secrets` が正。
+この README には、導入の手順と、yml を読むだけでは分からない横断的な挙動を書く。
+
+## 導入
 
 利用側リポジトリのルートで 1 行。CI Gate の呼び出し workflow (`ci.yml` / `hotfix-revert-approve.yml`) を書き、
-`hotfix` / `revert` ラベルを作り、secrets の有無を確認して、残りの手作業を `todo` として並べる。
-
-2 回目以降は同じコマンドで更新になる。install.sh が作った workflow は最新のテンプレート (permissions や新しい input) に
-書き直され、`with:` の値 (手で直したコマンドや追加した input も) と `uses:` の参照は既存のものを引き継ぐ。
-オプションで指定したものだけが上書きされ、`echo "skip: ..."` / `run-test: false` は検出し直す
-(script を追加して再実行すれば本物のコマンドになる)。中身が同じなら `unchanged`、install.sh 以外が作ったファイルは `kept` で触らない。
+ラベルを作り、secrets の有無を確認して、残りの手作業を `todo` として並べる。オプションは `--help` に出る。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/omni-stove/.github/main/install.sh | bash -s -- --review --ruleset
@@ -18,158 +16,82 @@ curl -fsSL https://raw.githubusercontent.com/omni-stove/.github/main/install.sh 
 gh api repos/omni-stove/.github/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash -s -- --review --ruleset
 ```
 
-| option | 説明 |
-| --- | --- |
-| `--review` | Code Review (`run-review: true`) を有効にする |
-| `--provider claude\|codex` | レビューの provider (既定: claude) |
-| `--auto-merge` | `auto-merge.yml` も入れる (既にあれば指定しなくても更新する) |
-| `--issue-worker` | `issue-worker.yml` (Issue にラベルを付けるとエージェントが PR を作る) も入れ、`prototype` / `implementation` / `security` ラベルを作る (既にあれば指定しなくても更新する) |
-| `--ruleset` | 既定ブランチに `ci / CI Gate` を必須チェックにする ruleset "CI Gate" を作る (同名があれば更新。admin 権限が要る) |
-| `--ref <ref>` | `omni-stove/.github` の参照 (既定: 既存 workflow の参照、無ければ `main`) |
-| `--force` | 既存の設定を引き継がず検出結果から書き直す。install.sh 以外が作ったファイルも上書きする |
-| `--no-labels` | ラベルを作らない |
-
 検出するもの: `mise.toml` (`node = "..."`) → Node.js バージョン、`package.json` の `lint` / `typecheck` / `test` script →
 各コマンド (無ければ `echo "skip: ..."` または `run-test: false` にして `todo` を出す)、`origin/HEAD` または gh → 既定ブランチ、
-リポジトリの公開/非公開 → 公開なら `review-allowed-bots: ""`。
+リポジトリの公開/非公開 → 公開なら `review-allowed-bots: ""` / `allowed-bots: ""`。
+
+2 回目以降は同じコマンドで更新になる。install.sh が作った workflow は最新のテンプレート (permissions や新しい input) に
+書き直され、`with:` の値 (手で直したコマンドや追加した input も) と `uses:` の参照は既存のものを引き継ぐ。
+オプションで指定したものだけが上書きされ、`echo "skip: ..."` / `run-test: false` は検出し直す
+(script を追加して再実行すれば本物のコマンドになる)。中身が同じなら `unchanged`、install.sh 以外が作ったファイルは `kept` で触らない。
 
 依存は bash と git だけ。gh でログインしていればラベル / secrets 確認 / ruleset まで行い、無ければ `todo` に落とす。
-テストは `bats install.bats`。
 
-## Composite Actions
+## GitHub App と secrets
 
-### `setup-pnpm-node`
+Code Review の approve / request-changes は、PR 作成者とは別の identity で提出する必要がある
+(GitHub は自分の PR への approve を拒否する)。`github.token` (`github-actions[bot]`) で出すと、
+`github-actions[bot]` が作った PR に approve できず、`labeled` 等のイベントも他の workflow を起動しない。
+そのため **reviewer App** (レビューを提出する) と **agent App** (PR を作る) の 2 つを作る。
+同じ App にすると自分の PR に approve できない。
 
-Sets up pnpm + Node.js with caching.
+### reviewer App
 
-```yaml
-- uses: omni-stove/.github/actions/setup-pnpm-node@main
-  with:
-    node-version: "24"          # default: "24"
-    frozen-lockfile: "true"     # default: "true"
-    install-filter: ""          # default: "" (all packages)
-```
+Organization の Settings → Developer settings → GitHub Apps → New GitHub App
 
-### `github-app-token`
-
-GitHub App の installation access token を生成する。token に加えて、レビュー提出や dismiss の
-対象を絞るための `bot-login` (`<app-slug>[bot]`) も返す。
-
-```yaml
-- uses: omni-stove/.github/actions/github-app-token@main
-  id: app
-  with:
-    app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
-    private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
-# steps.app.outputs.token / app-slug / bot-login
-```
-
-### `check-pr-conflict`
-
-PR がベースブランチとコンフリクトしているか (`mergeable_state == 'dirty'`) を判定する。
-`opened` では判定をスキップして必ず `conflicted=false` を返す。
-
-```yaml
-- uses: omni-stove/.github/actions/check-pr-conflict@main
-  id: conflict
-  with:
-    pr-number: ${{ github.event.pull_request.number }}
-# steps.conflict.outputs.conflicted == 'true' なら後続ジョブをスキップする
-```
-
-### `ci-gate`
-
-複数ジョブの結果を集約して 1 つの必須チェックにする。`failure` / `cancelled` が 1 つでもあれば
-失敗、`skipped` は失敗ではない。`hotfix` / `revert` ラベル、`revert-` ブランチは素通しで success。
-
-```yaml
-ci-gate:
-  name: CI Gate
-  needs: [lint, test, e2e]
-  if: always()
-  runs-on: ubuntu-latest
-  steps:
-    - uses: omni-stove/.github/actions/ci-gate@main
-      with:
-        results: ${{ toJSON(needs) }}      # または 1 行 1 件の "name=result"
-        bypass-labels: "hotfix,revert"     # default
-        bypass-branch-prefixes: "revert-"  # default
-```
-
-### `agent-run`
-
-コーディングエージェント (Claude Code / OpenAI Codex) を共通インターフェースで実行する。
-`provider` を切り替えるだけで、prompt / json-schema / allowed-tools / permission-profile は
-どちらでも同じ意味で動く。スクリプトは全て bash + jq (Node.js 不要)。
-
-```yaml
-- uses: omni-stove/.github/actions/agent-run@main
-  id: agent
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}            # provider=claude (または CLAUDE_CODE_OAUTH_TOKEN)
-    CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}                  # provider=codex
-    AGENT_GITHUB_TOKEN: ${{ github.token }}
-  with:
-    provider: claude            # claude | codex
-    tier: high                  # max | high | medium | low (provider ごとの最新世代に解決)
-    model: ""                   # 指定すると tier より優先
-    effort: ""                  # low | medium | high | xhigh | max
-    permission-profile: ""      # read-only | workspace-write | danger-full-access (空なら allowed-tools から推定)
-    allowed-tools: "Read,Grep,Bash(git diff:*)"
-    disallowed-tools: "WebFetch,WebSearch"
-    system-prompt: "Always output in Japanese."
-    json-schema: '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}'
-    prompt: "..."
-# steps.agent.outputs.structured-output / text-output / provider / model / execution-file
-```
-
-| 入力 | 説明 |
+| 項目 | 値 |
 | --- | --- |
-| `provider` | `claude` (既定) か `codex` |
-| `tier` / `model` / `effort` | tier は max→fable/astra、high→opus/sol、medium→sonnet/terra、low→haiku/luna に解決。model 指定時はそのまま渡す |
-| `allowed-tools` / `disallowed-tools` / `settings` | Claude 形式 (`Tool` / `Bash(pattern)`)。Codex では PreToolUse hook (`tool-policy-hook.sh`) と config に変換する。Codex に変換できない settings はエラー |
-| `permission-profile` | `read-only` では書き込み系ツールと安全でない Bash を両 provider で拒否する。Claude は `Bash(pattern)` を固定の読み取りコマンド (`git --no-optional-locks status` 等) に限る |
-| `json-schema` | 構造化出力を強制し、両 provider の出力を `validate-json-schema.jq` で検証する。違反なら失敗 |
-| `extra-claude-args` / `extra-codex-args` | provider 固有の追加引数。他方の provider では警告して無視 |
-| `rate-limit-retry-max-wait-seconds` | Claude が GitHub API のレート制限で落ちたら解除まで待って 1 回再実行する |
+| GitHub App name | `omni-stove-reviewer` (任意。bot login は `omni-stove-reviewer[bot]` になる) |
+| Homepage URL | `https://github.com/omni-stove/.github` |
+| Webhook | Active のチェックを外す |
+| Repository permissions | **Pull requests: Read and write** (review の提出・dismiss、インラインコメント) <br> **Issues: Read and write** (インライン化できなかった指摘のフォールバックコメント) <br> **Contents: Read-only** <br> **Metadata: Read-only** (自動) |
+| Where can this App be installed? | Only on this account |
 
-テストは `actions/agent-run/*.bats` (`bats actions/agent-run`)。
+作成後、App の設定画面 (`https://github.com/organizations/<org>/settings/apps/<app-name>`) で次を取る。
 
-### `resolve-issue` / `create-issue-pr` / `agent-regen`
+- **App ID**: General に表示される。
+- **PEM**: Credentials → Key pairs → **New key** でダウンロードされる (Key pairs の URL は `.../settings/apps/<app-name>/key_pairs`)。
 
-`issue-worker.yml` が使う部品。Issue 起点の自前ワークフローを組むときにも使える。
+App の Install App → omni-stove → All repositories (または使うリポジトリだけ) でインストールする。
 
-| action | 役割 |
+### agent App
+
+`issue-worker.yml` など agent が PR を作る workflow で `github.token` の代わりに使う。App token で作った PR では
+`pull_request` イベントで CI が起動する (`github.token` で作った PR では起動しない)。
+
+| 項目 | 値 |
 | --- | --- |
-| `resolve-issue` | Issue を読み、付いたラベルからモード (fix / security-fix / proto / implement)・ブランチ名・draft・PR ラベル・編集スコープ (`App:<name>` ラベル → `apps/<name>`)・エージェントへのタスク文を決める。走らせないラベルや閉じた Issue では `mode` を空にする |
-| `create-issue-pr` | 作業ツリーの編集を 1 コミットにまとめて push し、構造化出力 `{message,title,purpose,approach,verification,review_points,closes_issue}` から PR を作る。変更が無ければ PR を作らず Issue に理由をコメントする。同じブランチの open PR があればそこへ push する |
-| `agent-regen` | エージェントが `package.json` 等を変えたか `needs_regen` を申告したときだけ、Node.js を用意して `command` (lockfile / 生成物の作り直し) を実行する |
+| GitHub App name | `omni-stove-agent` (任意。コミットと PR の author が `<name>[bot]` になる) |
+| Webhook | Active のチェックを外す |
+| Repository permissions | **Contents: Read and write** (ブランチへの push) <br> **Pull requests: Read and write** (PR 作成・ラベル) <br> **Issues: Read and write** (Issue の読み取り・コメント) <br> **Metadata: Read-only** (自動) |
 
-```yaml
-- uses: omni-stove/.github/actions/create-issue-pr@main
-  with:
-    structured: ${{ steps.agent.outputs.structured-output }}
-    branch: agent-fix/issue-${{ github.event.issue.number }}
-    issue-number: ${{ github.event.issue.number }}
-    labels: "prototype App:web"      # 無いラベルは警告して飛ばす
-    draft: "false"
-    start-sha: ${{ steps.start.outputs.sha }}   # エージェントが commit してしまった分も拾う
-    github-token: ${{ steps.app.outputs.token }}
-# steps.pr.outputs.pr-url / pr-number
-```
+App ID と PEM の取り方とインストールは reviewer App と同じ。自前の workflow では `actions/github-app-token` で token を作り、
+`actions/checkout` の `token` や `gh` の `GH_TOKEN` に渡す。
 
-テストは `actions/{resolve-issue,create-issue-pr,agent-regen}/*.bats`。
+### secrets
 
-### `fetch-review-diff` / `post-review-comments` / `finalize-review`
+Organization の Settings → Secrets and variables → Actions → New organization secret (リポジトリ単位でもよい)。
+呼び出し側は `secrets: inherit` で渡す。
 
-`ci.yml` の Code Review が使う部品。自前のレビューワークフローを組むときにも使える。
+| secret | 使う workflow | 値 |
+| --- | --- | --- |
+| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
+| `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
+| `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` | agent App の App ID / PEM。無ければ `github.token` で PR を作る |
+| `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare-worker.yml` | Cloudflare の API token |
 
-| action | 役割 |
+### ラベルと必須チェック
+
+install.sh が作る。手で作るときは次のとおり。
+
+| ラベル | 役割 |
 | --- | --- |
-| `fetch-review-diff` | PR の diff と文脈 (説明 / 参照 Issue / コミット / コメント / レビュースレッド) を取得し、ドキュメント・自動生成物・lockfile 等を除外して出力する。プロンプト上限を超える分は作業ツリーに書き出す |
-| `post-review-comments` | 構造化出力 `{"comments":[{path,line,body}]}` をインラインコメント付き review として投稿する。重複除外、422 時のファイル単位 → 通常コメントへのフォールバック付き |
-| `finalize-review` | lint / test の結果と指摘件数から approve / request-changes を提出する。自分の古い CHANGES_REQUESTED は提出前に dismiss する |
+| `hotfix` / `revert` | 緊急避難口。PR に付けると lint / test / review をスキップして CI Gate を素通しにし、`hotfix-revert-approve.yml` が approve を出す。`revert-` ブランチの PR はラベル無しで同じ扱い |
+| `bug` / `security` / `prototype` / `implementation` | Issue に付けると `issue-worker.yml` が起動する (下記) |
+
+ruleset / branch protection の必須チェックには `ci / CI Gate` (`ci` は呼び出し側の job 名) だけを登録する。
+Lint / Test / Review の個別ジョブは登録しない (スキップ時に pending のまま残るため)。
 
 ## Reusable Workflows
 
@@ -185,6 +107,8 @@ changes ─┬─ lint ───┬─ CI Gate   (必須チェック)
 
 ```yaml
 on:
+  push:
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -203,46 +127,15 @@ jobs:
       lint-command: "pnpm lint"
       typecheck-command: "pnpm typecheck"
       test-command: "pnpm test"
-      run-review: true               # default: false
+      run-review: true
     secrets: inherit
 ```
 
-| input | default | 説明 |
-| --- | --- | --- |
-| `node-version` | `"24"` | |
-| `lint-command` | `"pnpm lint"` | |
-| `typecheck-command` | `"pnpm typecheck"` | |
-| `test-command` | `"pnpm test"` | `test-jobs` を指定しないときの単一 test コマンド |
-| `test-jobs` | `""` | test ジョブの定義 (JSON 配列)。下記「test をアプリごとに差し替える」参照 |
-| `run-test` | `true` | |
-| `gate` | `true` | `false` で CI Gate と finalize をこの workflow では走らせない (呼び出し側の `ci-gate.yml` に任せる) |
-| `run-review` | `false` | Claude Code によるコードレビューと approve / request-changes の提出を行う |
-| `review-provider` | `"claude"` | レビューを実行するエージェント (`claude` / `codex`)。`agent-run` で切り替える |
-| `review-tier` | `"high"` | モデルの tier (max / high / medium / low) |
-| `review-model` | `""` | モデルを直接指定する (空なら tier から解決) |
-| `review-effort` | `""` | 推論 effort |
-| `review-max-turns` | `"80"` | `--max-turns` |
-| `review-allowed-bots` | `"*"` | bot が作った PR でもレビューを走らせる bot 名 (カンマ区切り)。公開リポジトリでは外部 App が起動できてしまうため、bot 名を列挙するか `""` にする |
-| `review-instructions` | `""` | レビュー指示に追記する文 (リポジトリ固有の観点や弱点) |
-| `review-exclude-patterns` | `""` | レビュー対象から追加で除外する glob (改行区切り) |
-
-| secret | 必須 | 説明 |
-| --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `review-provider: claude` のとき | Claude Code の認証 |
-| `OPENAI_API_KEY` | `review-provider: codex` のとき | Codex の認証 |
-| `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | 推奨 | レビューを投稿・approve する GitHub App。無ければ `github.token` を使う (下記参照) |
-
-`ci.yml` の outputs: `conflicted` / `review-comments` / `review-result` (`gate: false` のとき `ci-gate.yml` に渡す)。
-
-挙動:
-
 - **CI Gate** は `always()` で必ず走り、lint / test / review のどれかが `failure` / `cancelled` なら失敗する。
-  `skipped` (`run-test: false` 等) は失敗ではない。ruleset の必須チェックには `ci / CI Gate` だけを登録する。
+  `skipped` (`run-test: false` 等) は失敗ではない。
 - **コンフリクト PR** は lint / test / review を走らせない。解消で `synchronize` が飛び、CI が再実行される。
-- **緊急避難口**: `hotfix` / `revert` ラベル、または `revert-` ブランチの PR は lint / test / review をスキップし、
-  CI Gate は素通しで success になる。request-changes によるマージブロックは `hotfix-revert-approve.yml` が外す。
-- **Code Review** は `agent-run` (Claude Code / Codex) が指摘を構造化出力で返し、インラインコメントとして投稿する。コメントの
-  投稿に失敗した run は CI Gate を通過しない。マージコミット (Update Branch) と、除外後にレビュー対象が
+- **Code Review** は `agent-run` (Claude Code / Codex) が指摘を構造化出力で返し、インラインコメントとして投稿する。
+  コメントの投稿に失敗した run は CI Gate を通過しない。マージコミット (Update Branch) と、除外後にレビュー対象が
   残らない PR ではレビューをスキップする。
 - **finalize** は lint / test に failure があれば指摘 0 件でも request-changes、無ければ指摘件数で決める
   (1 件以上で request-changes、0 件で approve)。レビューが failure / cancelled で完了していないときも
@@ -266,17 +159,6 @@ test ジョブは failure になり CI Gate が止める。
             "workingDirectory": "apps/worker", "installFilter": "worker" }
         ]
 ```
-
-| key | 必須 | 説明 |
-| --- | --- | --- |
-| `name` | ✓ | ジョブ名 (`Test (<name>)` として表示) |
-| `command` | ✓ | test コマンド |
-| `setup` | | test の前に実行するコマンド (ブラウザのインストール等) |
-| `workingDirectory` | | `setup` / `command` の作業ディレクトリ (既定: `.`) |
-| `runsOn` | | runner (既定: `ubuntu-latest`) |
-| `nodeVersion` | | Node.js のバージョン (既定: `node-version` 入力) |
-| `installFilter` | | `pnpm install --filter` の値 |
-| `timeoutMinutes` | | ジョブのタイムアウト (既定: 30) |
 
 **test ジョブを呼び出し側で自前に書く** (`run-test: false` + `gate: false` + `ci-gate.yml`)。
 services / container / 独自の runner など `test-jobs` で表現できないときはこちら。
@@ -330,14 +212,6 @@ jobs:
 `ci.yml` (`gate: false`) と呼び出し側の test ジョブの結果をまとめて CI Gate と finalize にする。
 使い方は上の「test ジョブを呼び出し側で自前に書く」を参照。
 
-| input | default | 説明 |
-| --- | --- | --- |
-| `results` | (必須) | 呼び出し側の `toJSON(needs)` |
-| `conflicted` | `"false"` | `ci.yml` の `outputs.conflicted` |
-| `review-comments` | `""` | `ci.yml` の `outputs.review-comments` |
-| `review-result` | `""` | `ci.yml` の `outputs.review-result` |
-| `finalize` | `true` | approve / request-changes を提出するか (`ci.yml` を `run-review` で呼んでいるときだけ) |
-
 ### `hotfix-revert-approve.yml`
 
 緊急避難口。PR に `hotfix` / `revert` ラベルが付いたら実行中の CI run をキャンセルし、reviewer App で
@@ -356,8 +230,6 @@ jobs:
       contents: read
       actions: write
       pull-requests: write
-    with:
-      ci-workflow: "ci.yml"   # default。キャンセル対象の workflow ファイル名
     secrets: inherit
 ```
 
@@ -373,8 +245,7 @@ PR 文面 (構造化出力) だけを担当し、ブランチ・ラベル・draf
 | `prototype` | モックで良い試作の draft PR (`prototype` ラベル付き) | `agent-proto/issue-<n>` |
 | `implementation` | 本実装 (実 DB / API、エラーハンドリング、テスト込み) の PR。`prototype` ラベルも付いた Issue では走らない | `agent-implement/issue-<n>` |
 
-`App:<name>` ラベルが付いていれば編集を `apps/<name>` に絞り、PR にも同じラベルを引き継ぐ
-(`scope-label-prefix` / `scope-dir` で変えられる)。
+`App:<name>` ラベルが付いていれば編集を `apps/<name>` に絞り、PR にも同じラベルを引き継ぐ。
 
 ```yaml
 on:
@@ -395,75 +266,15 @@ jobs:
     secrets: inherit
 ```
 
-| input | default | 説明 |
-| --- | --- | --- |
-| `issue-number` / `label` | `""` | 空なら `github.event.issue.number` / `github.event.label.name` を使う。`workflow_dispatch` から呼ぶときに渡す |
-| `provider` / `tier` / `model` / `effort` | `"claude"` / `"high"` / `""` / `""` | `agent-run` と同じ |
-| `allowed-tools` | Read / Edit / Write / Glob / Grep と pnpm / npm / make / git / gh / node 等の Bash | エージェントに許可するツール。`git commit` / `git push` / `gh pr create` / `gh pr merge` は常に deny |
-| `allowed-bots` | `"*"` | bot が付けたラベルでも起動する bot 名 (カンマ区切り)。公開リポジトリでは bot 名を列挙するか `""` にする |
-| `system-prompt` | 日本語で出力し、依存の install / テスト / lint をしない旨 | 追記するシステムプロンプト |
-| `instructions` | `""` | タスク指示に追記する文 (リポジトリ固有の規約や注意点) |
-| `scope-label-prefix` / `scope-dir` | `"App:"` / `"apps"` | 編集スコープのラベルとディレクトリ。接頭辞を `""` にすると無効 |
-| `base-branch` | `""` | PR の base (空なら既定ブランチ) |
-| `regen-command` | `""` | エージェントが `package.json` 等を変えたか `needs_regen` を申告したときに lockfile / 生成物を作り直すコマンド。空なら作り直さない (不整合は CI が落として知らせる) |
-| `node-version` | `"24"` | `regen-command` を動かす Node.js |
-| `timeout-minutes` | `60` | エージェントを含むジョブのタイムアウト |
-
-| secret | 必須 | 説明 |
-| --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `provider: claude` のとき | Claude Code の認証 |
-| `OPENAI_API_KEY` | `provider: codex` のとき | Codex の認証 |
-| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | 推奨 | PR を作る GitHub App (下記参照)。無ければ `github.token` で作るが、その PR では `pull_request` の CI が起動しない |
-
-outputs: `mode` (走らせなかったら空) / `pr-url` (作らなかったら空)。
-
-挙動:
-
 - **発火は `labeled` だけ**。ラベル付きで作成された Issue にも `labeled` は飛ぶので取りこぼさない。
-  `opened` も見ると同じ Issue に job が二重に走って同名ブランチへの push が衝突する。
   ラベルを付けられるのは triage 権限以上なので、Issue を書けるだけの人は起動できない (Issue 本文はプロンプトに入る)。
 - **同じ Issue の再実行** (ラベルを外して付け直す) は同じブランチに push し、open PR があればそれを更新する。
 - **変更なし**で終わったら PR を作らず、エージェントの理由と実行ログの URL を Issue にコメントする。
 - **Closes / refs** は構造化出力の `closes_issue` だけで決める。エージェントの文面にある close 系キーワードは外す。
+- **エージェントは依存を install しない**。`package.json` 等を変えたときは `regen-command` で lockfile / 生成物を作り直す。
+  空なら作り直さず、不整合は CI が落として知らせる。
 - **起票は `gh issue create --label bug`** のようにラベル付きで作ればよい。大きなタスクは `remote-issue` skill
   (skill-kit) で `bug` / `prototype` / `implementation` の Issue 群に分割して投げる。
-
-### `deploy-cloudflare-worker.yml`
-
-Deploy a Cloudflare Worker.
-
-```yaml
-jobs:
-  deploy:
-    uses: omni-stove/.github/.github/workflows/deploy-cloudflare-worker.yml@main
-    with:
-      app-name: my-app
-      working-directory: apps/my-app
-    secrets:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-```
-
-### `auto-merge.yml`
-
-Auto-merge approved PRs.
-
-```yaml
-jobs:
-  auto-merge:
-    uses: omni-stove/.github/.github/workflows/auto-merge.yml@main
-    secrets: inherit
-```
-
-### `coderabbit-bot-review.yml`
-
-Trigger CodeRabbit review on bot PRs.
-
-```yaml
-jobs:
-  trigger-review:
-    uses: omni-stove/.github/.github/workflows/coderabbit-bot-review.yml@main
-    secrets: inherit
-```
 
 ### `claude-code.yml`
 
@@ -476,67 +287,151 @@ jobs:
     uses: omni-stove/.github/.github/workflows/claude-code.yml@main
     with:
       prompt: "..."
-      provider: claude          # claude | codex
+      provider: claude
       tier: high
       allowed-tools: "Edit,Write,Read,Bash"
-    secrets: inherit            # CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / OPENAI_API_KEY
+    secrets: inherit
 ```
 
-## GitHub App の設定 (CI Gate 用)
+### `auto-merge.yml`
 
-Code Review の approve / request-changes は、PR 作成者とは別の identity で提出する必要がある
-(GitHub は自分の PR への approve を拒否する)。`github.token` (`github-actions[bot]`) で出すと、
-`github-actions[bot]` が作った PR (Claude Code が Issue から起こす PR など) に approve できず、
-`labeled` 等のイベントも他の workflow を起動しない。そのため reviewer 専用の GitHub App を 1 つ作る。
+approve された PR を自動でマージする。`prototype` ラベル付きの PR は既定で対象外。
 
-### 1. App を作る
+```yaml
+on:
+  pull_request_review:
+    types: [submitted]
 
-Organization の Settings → Developer settings → GitHub Apps → New GitHub App
+jobs:
+  auto-merge:
+    uses: omni-stove/.github/.github/workflows/auto-merge.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    secrets: inherit
+```
 
-| 項目 | 値 |
-| --- | --- |
-| GitHub App name | `omni-stove-reviewer` (任意。bot login は `omni-stove-reviewer[bot]` になる) |
-| Homepage URL | `https://github.com/omni-stove/.github` |
-| Webhook | Active のチェックを外す |
-| Repository permissions | **Pull requests: Read and write** (review の提出・dismiss、インラインコメント) <br> **Issues: Read and write** (インライン化できなかった指摘のフォールバックコメント) <br> **Contents: Read-only** <br> **Metadata: Read-only** (自動) |
-| Where can this App be installed? | Only on this account |
+### `deploy-cloudflare-worker.yml`
 
-作成後、**Generate a private key** で PEM をダウンロードし、App ID を控える。
+Cloudflare Worker をデプロイする。
 
-### 2. Organization にインストールする
+```yaml
+jobs:
+  deploy:
+    uses: omni-stove/.github/.github/workflows/deploy-cloudflare-worker.yml@main
+    with:
+      app-name: my-app
+      working-directory: apps/my-app
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+```
 
-App の Install App → omni-stove → All repositories (または CI Gate を使うリポジトリだけ)。
+## Composite Actions
 
-### 3. Secrets を登録する
+### `setup-pnpm-node`
 
-Organization の Settings → Secrets and variables → Actions → New organization secret
+pnpm + Node.js をキャッシュ付きでセットアップし、依存を install する。
 
-| secret | 値 |
-| --- | --- |
-| `REVIEWER_GH_APP_ID` | App ID |
-| `REVIEWER_GH_APP_PRIVATE_KEY` | ダウンロードした PEM の中身 |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | Claude Code の認証 |
+```yaml
+- uses: omni-stove/.github/actions/setup-pnpm-node@main
+  with:
+    node-version: "24"
+```
 
-呼び出し側は `secrets: inherit` で渡す。リポジトリ単位で secrets を置いてもよい。
+### `github-app-token`
 
-### 4. ラベルと必須チェック
+GitHub App の installation access token を生成する。token に加えて、レビュー提出や dismiss の
+対象を絞るための `bot-login` (`<app-slug>[bot]`) も返す。
 
-- 各リポジトリに `hotfix` / `revert` ラベルを作る (緊急避難口。無ければ機能しないだけで害はない)。
-- ruleset / branch protection の必須チェックに `ci / CI Gate` (`ci` は呼び出し側の job 名) を登録する。
-  Lint / Test / Review の個別ジョブは登録しない (スキップ時に pending のまま残るため)。
+```yaml
+- uses: omni-stove/.github/actions/github-app-token@main
+  id: app
+  with:
+    app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
+    private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
+# steps.app.outputs.token / app-slug / bot-login
+```
 
-### PR を作る agent 用の App
+### `check-pr-conflict`
 
-`issue-worker.yml` など agent が PR を作るワークフローで `github.token` の代わりに App token を使うと、
-作成した PR の `pull_request` イベントで CI が起動する (`github.token` で作った PR では起動しない)。
-reviewer App とは**別の** App にする (同じ App だと自分の PR に approve できない)。
+PR がベースブランチとコンフリクトしているか (`mergeable_state == 'dirty'`) を判定する。
 
-| 項目 | 値 |
-| --- | --- |
-| GitHub App name | `omni-stove-agent` (任意。コミットと PR の author が `<name>[bot]` になる) |
-| Webhook | Active のチェックを外す |
-| Repository permissions | **Contents: Read and write** (ブランチへの push) <br> **Pull requests: Read and write** (PR 作成・ラベル) <br> **Issues: Read and write** (Issue の読み取り・コメント) <br> **Metadata: Read-only** (自動) |
+```yaml
+- uses: omni-stove/.github/actions/check-pr-conflict@main
+  id: conflict
+  with:
+    pr-number: ${{ github.event.pull_request.number }}
+# steps.conflict.outputs.conflicted == 'true' なら後続ジョブをスキップする
+```
 
-reviewer App と同じ手順でインストールし、organization secret に `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` を置く。
-`issue-worker.yml` は `secrets: inherit` で拾う。自前のワークフローでは `actions/github-app-token` で token を作り、
-`actions/checkout` の `token` や `gh` の `GH_TOKEN` に渡す。
+### `ci-gate`
+
+複数ジョブの結果を集約して 1 つの必須チェックにする。
+
+```yaml
+ci-gate:
+  name: CI Gate
+  needs: [lint, test, e2e]
+  if: always()
+  runs-on: ubuntu-latest
+  steps:
+    - uses: omni-stove/.github/actions/ci-gate@main
+      with:
+        results: ${{ toJSON(needs) }}
+```
+
+### `agent-run`
+
+コーディングエージェント (Claude Code / OpenAI Codex) を共通インターフェースで実行する。
+`provider` を切り替えるだけで、prompt / json-schema / allowed-tools / permission-profile は
+どちらでも同じ意味で動く。認証は `with` ではなく `env` で受ける。
+
+```yaml
+- uses: omni-stove/.github/actions/agent-run@main
+  id: agent
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    AGENT_GITHUB_TOKEN: ${{ github.token }}
+  with:
+    provider: claude
+    tier: high
+    allowed-tools: "Read,Grep,Bash(git diff:*)"
+    system-prompt: "Always output in Japanese."
+    json-schema: '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}'
+    prompt: "..."
+# steps.agent.outputs.structured-output / text-output / provider / model / execution-file
+```
+
+### `resolve-issue` / `create-issue-pr` / `agent-regen`
+
+`issue-worker.yml` が使う部品。Issue 起点の自前ワークフローを組むときにも使える。
+`resolve-issue` がラベルからモード・ブランチ・タスク文を決め、`agent-regen` が lockfile / 生成物を作り直し、
+`create-issue-pr` が作業ツリーの編集を 1 コミットにまとめて push し、構造化出力から PR を作る。
+
+```yaml
+- uses: omni-stove/.github/actions/create-issue-pr@main
+  with:
+    structured: ${{ steps.agent.outputs.structured-output }}
+    branch: agent-fix/issue-${{ github.event.issue.number }}
+    issue-number: ${{ github.event.issue.number }}
+    labels: "prototype App:web"
+    start-sha: ${{ steps.start.outputs.sha }}
+    github-token: ${{ steps.app.outputs.token }}
+# steps.pr.outputs.pr-url / pr-number
+```
+
+### `fetch-review-diff` / `post-review-comments` / `finalize-review`
+
+`ci.yml` の Code Review が使う部品。自前のレビューワークフローを組むときにも使える。
+`fetch-review-diff` が PR の diff と文脈を取得し、`post-review-comments` が構造化出力をインラインコメント付き
+review として投稿し、`finalize-review` が lint / test の結果と指摘件数から approve / request-changes を提出する。
+
+## 開発
+
+```sh
+make setup   # mise のツールと skill-kit を入れる
+make lint    # shellcheck + actionlint
+make test    # bats (install.bats と actions/*/*.bats)
+```
