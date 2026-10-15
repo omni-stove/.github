@@ -71,4 +71,6 @@ runs:
         SCOPE_LABEL_PREFIX: ${{ inputs.scope-label-prefix }}
         SCOPE_DIR: ${{ inputs.scope-dir }}
         GH_TOKEN: ${{ inputs.github-token }}
+        # 走らせないラベルでは checkout しないので、gh がリポジトリを推定できるよう明示する。
+        GH_REPO: ${{ github.repository }}
       run: bash "$GITHUB_ACTION_PATH/resolve-issue.sh"
