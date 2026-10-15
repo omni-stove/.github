@@ -1,0 +1,62 @@
+name: Decide Fix
+description: |
+  lint / test / review の統合結果から、自動修正 (agent-fix.yml) を起動するかときっかけを決める。
+    - lint / test に failure があれば trigger=ci (レビュー指摘も併せて直す)
+    - そうでなくレビュー指摘があれば trigger=review
+  レビュー指摘の自動修正は、PR の skip-autofix ラベルか、既定ブランチのオプトアウトファイルに
+  PR 作成者が載っていることで止まる (lint / test の修正は止まらない)。force-autofix ラベルで打ち消せる。
+  fork の PR と、agent App の secrets が無いときは起動しない。
+  判定のロジックとテストは decide-fix.sh / decide-fix.bats を参照。
+
+inputs:
+  lint-test-results:
+    description: lint / test ジョブの result を空白区切りで列挙したもの
+    required: false
+    default: ""
+  review-comment-count:
+    description: Code Review の指摘件数
+    required: false
+    default: "0"
+  has-agent-app:
+    description: AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY があれば 'true'
+    required: false
+    default: "false"
+  opt-out-path:
+    description: |
+      レビュー指摘の自動修正を止めるユーザーを列挙したファイルのパス (既定ブランチから読む)。
+      `users: [octocat, hubot]` または `users:` の下に `- octocat` の形で書く
+    required: false
+    default: ".github/autofix-opt-out.yml"
+  github-token:
+    description: オプトアウトファイルの取得に使うトークン
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  should-fix:
+    description: 自動修正を起動するなら 'true'
+    value: ${{ steps.decide.outputs.should_fix }}
+  trigger:
+    description: 修正のきっかけ (ci | review)
+    value: ${{ steps.decide.outputs.trigger }}
+  fix-review-comments:
+    description: レビュー指摘も修正対象にするなら 'true'
+    value: ${{ steps.decide.outputs.fix_review_comments }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide whether to run auto-fix
+      id: decide
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        LINT_TEST_RESULTS: ${{ inputs.lint-test-results }}
+        REVIEW_COMMENT_COUNT: ${{ inputs.review-comment-count }}
+        HAS_AGENT_APP: ${{ inputs.has-agent-app }}
+        OPT_OUT_PATH: ${{ inputs.opt-out-path }}
+      run: bash "$GITHUB_ACTION_PATH/decide-fix.sh"

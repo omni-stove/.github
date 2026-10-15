@@ -11,6 +11,10 @@ inputs:
     description: エージェントの structured_output (JSON 文字列)。needs_regen を見る
     required: false
     default: ""
+  ci-failure:
+    description: 自動修正のきっかけになった CI 失敗ログ。lockfile の不一致で落ちていれば作り直す
+    required: false
+    default: ""
   command:
     description: 作り直しのコマンド (例 "pnpm install --lockfile-only --no-frozen-lockfile")。空なら何もしない
     required: false
@@ -34,6 +38,7 @@ runs:
       shell: bash
       env:
         STRUCTURED: ${{ inputs.structured }}
+        CI_FAILURE: ${{ inputs.ci-failure }}
       run: bash "$GITHUB_ACTION_PATH/decide.sh"
 
     - name: Setup pnpm

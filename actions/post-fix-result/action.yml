@@ -1,0 +1,55 @@
+name: Post Fix Result
+description: |
+  自動修正の結果を PR に残す。エージェントの summary を会話コメントに投稿し、push したときは
+  指摘ごとの対応をそのレビュースレッドへ返信する。連続上限での打ち切りとコンフリクトは marker 付きの
+  コメントで知らせる。ロジックとテストは post-fix-result.sh / post-fix-result.bats を参照。
+
+inputs:
+  pr-number:
+    description: PR 番号
+    required: true
+  result:
+    description: pushed | noop | conflict | failed | skipped | external | loop (エージェントが途中で落ちたら空)
+    required: false
+    default: ""
+  structured:
+    description: エージェントの structured_output (JSON 文字列)
+    required: false
+    default: ""
+  ref:
+    description: PR の head ブランチ名
+    required: false
+    default: ""
+  max-consecutive:
+    description: 自動修正コミットの連続上限 (打ち切り通知の文面に使う)
+    required: false
+    default: "3"
+  rate-limited:
+    description: エージェントが GitHub API のレート制限で落ちたら 'true'
+    required: false
+    default: ""
+  rate-limit-reset:
+    description: レート制限の解除時刻 (epoch 秒)
+    required: false
+    default: ""
+  github-token:
+    description: 投稿に使うトークン
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Post fix result
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ inputs.pr-number }}
+        RESULT: ${{ inputs.result }}
+        STRUCTURED: ${{ inputs.structured }}
+        REF: ${{ inputs.ref }}
+        MAX_CONSECUTIVE: ${{ inputs.max-consecutive }}
+        RATE_LIMITED: ${{ inputs.rate-limited }}
+        RATE_LIMIT_RESET: ${{ inputs.rate-limit-reset }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: bash "$GITHUB_ACTION_PATH/post-fix-result.sh"

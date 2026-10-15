@@ -1,0 +1,226 @@
+name: Agent Fix
+
+# CI の失敗とレビュー指摘をコーディングエージェントに直させ、PR の head に 1 コミット積む reusable workflow。
+# ci.yml / ci-gate.yml の fix ジョブが、actions/decide-fix の判定 (起動可否ときっかけ) を受けて呼ぶ。
+#
+# エージェントは依存を入れず、テストも走らせない。渡すのは actions/fix-context が集めた CI 失敗ログ・
+# PR の背景・未解決のレビュー指摘とコードだけで、push 後に走る次の CI が修正の検証になる。
+# commit / rebase / push / コメント投稿は決定論的に step が行う。
+#
+# push は agent App のトークンで行う。github.token の push では次の CI が起動しないため。
+# 自動修正コミットが人間のコミットを挟まず max-consecutive 回続いたら止めて PR で知らせる。
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: 対象 PR 番号
+        type: string
+        required: true
+      ref:
+        description: fix を push する PR の head ブランチ
+        type: string
+        required: true
+      trigger:
+        description: 修正のきっかけ (ci | review)
+        type: string
+        required: true
+      fix-review-comments:
+        description: レビュー指摘も修正対象にするか。'false' なら trigger=ci でも lint / test の失敗だけを直す
+        type: string
+        default: "true"
+      workflow-run-id:
+        description: trigger=ci のとき、失敗ログを引く CI run の ID
+        type: string
+        default: ""
+      provider:
+        description: 実行する provider (claude | codex)
+        type: string
+        default: "claude"
+      tier:
+        description: モデルの tier (max | high | medium | low)
+        type: string
+        default: "medium"
+      model:
+        description: モデルを直接指定する (空なら tier から解決する)
+        type: string
+        default: ""
+      effort:
+        description: 推論 effort (low | medium | high | xhigh | max)。空なら provider の既定値
+        type: string
+        default: ""
+      max-turns:
+        description: エージェントの最大ターン数 (--max-turns)
+        type: string
+        default: "40"
+      allowed-bots:
+        description: bot が起こした run でもエージェントを走らせる bot 名 (カンマ区切り。'*' で全て)
+        type: string
+        default: "*"
+      instructions:
+        description: 修正指示に追記する文 (リポジトリ固有の規約や注意点)
+        type: string
+        default: ""
+      max-consecutive:
+        description: 人間のコミットを挟まずに自動修正を続ける上限
+        type: string
+        default: "3"
+      regen-command:
+        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。空なら作り直さない
+        type: string
+        default: ""
+      node-version:
+        description: regen-command を動かす Node.js のバージョン
+        type: string
+        default: "24"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      AGENT_GH_APP_ID:
+        required: false
+      AGENT_GH_APP_PRIVATE_KEY:
+        required: false
+
+# 同じブランチへの fix の push を直列化する。
+concurrency:
+  group: agent-fix-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Agent Fix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # permissions を書かず呼び出し側のものを引き継ぐ (失敗ログの取得に actions: read、コメントに
+    # pull-requests / issues: write、エージェントに id-token: write)。書くと、actions: read を渡していない
+    # 呼び出し側が読み込み時に権限超過で落ちる。push は agent App のトークンで行うので contents: write は要らない。
+    steps:
+      - name: Generate agent App token
+        id: app
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.AGENT_GH_APP_ID }}
+          private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
+
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          # ループ防止が直近の max-consecutive 件のコミットを読む。rebase は対象ブランチを明示 fetch する。
+          fetch-depth: ${{ inputs.max-consecutive }}
+          ref: ${{ inputs.ref }}
+          # 作り直し (regen-command) が PR のコードを実行するため、書き込みトークンを .git/config に残さない。
+          persist-credentials: false
+
+      - name: Collect fix context
+        id: context
+        uses: omni-stove/.github/actions/fix-context@main
+        with:
+          pr-number: ${{ inputs.pr-number }}
+          trigger: ${{ inputs.trigger }}
+          fix-review-comments: ${{ inputs.fix-review-comments }}
+          workflow-run-id: ${{ inputs.workflow-run-id }}
+          bot-login: ${{ steps.app.outputs.app-slug }}
+          max-consecutive: ${{ inputs.max-consecutive }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Run agent fix
+        id: agent
+        if: steps.context.outputs.skip != 'true' && steps.context.outputs.run == 'true'
+        uses: omni-stove/.github/actions/agent-run@main
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          provider: ${{ inputs.provider }}
+          tier: ${{ inputs.tier }}
+          model: ${{ inputs.model }}
+          effort: ${{ inputs.effort }}
+          allowed-bots: ${{ inputs.allowed-bots }}
+          extra-claude-args: "--max-turns ${{ inputs.max-turns }}"
+          # App のレート制限は他の workflow と共有で枯渇しやすいので、timeout-minutes に収まる 15 分まで待つ。
+          rate-limit-retry-max-wait-seconds: "900"
+          allowed-tools: "Read,Edit,Write,NotebookEdit,Glob,Grep"
+          disallowed-tools: "Bash,WebFetch,WebSearch,Task,Agent,Skill"
+          permission-profile: workspace-write
+          system-prompt: "Always output in Japanese."
+          json-schema: '{"type":"object","required":["summary","replies","blocked_by_external","needs_regen"],"additionalProperties":false,"properties":{"needs_regen":{"type":"boolean","description":"package.json の依存か生成物の生成元を変更した、または lint/test が lockfile か生成物の不一致で落ちているなら true。"},"blocked_by_external":{"type":"boolean","description":"lint/test 失敗の原因が PR の差分外 (既定ブランチや別ブランチ) にあり、この PR では直せないなら true。その失敗は編集せず、原因を summary に書く。判断できないなら false。"},"summary":{"type":"string","description":"したことだけを書く。1 行目はコミット件名になる。見送った指摘はその根拠、修正不要ならその旨を書く。"},"replies":{"type":"array","description":"レビュー指摘ごとの対応内容。該当なしなら空配列。","items":{"type":"object","required":["comment_id","note"],"additionalProperties":false,"properties":{"comment_id":{"type":"integer","description":"返信先。指摘の見出しにある [comment_id=N] の N。"},"note":{"type":"string","description":"その指摘に対して何をしたか。直さなかったならその理由。"}}}}}}'
+          prompt: |
+            Fix what is reported below, and nothing else.
+
+            ${{ steps.context.outputs.pr-context }}
+
+            ${{ steps.context.outputs.ci-failure }}
+
+            ${{ steps.context.outputs.review-comments }}
+
+            Read the AGENTS.md or CLAUDE.md nearest to each file you edit and follow it.
+
+            ${{ inputs.instructions }}
+
+            Fix the root cause with the smallest change that holds, leaving a test's assertions and unrelated code as they are. Leave lockfiles and generated files to their generators.
+
+            A failing lint or test still needs a fix whatever the discussion settled, unless the log shows the runner rather than the code gave way.
+
+            Add a `replies` entry for each review comment you addressed or deliberately skipped.
+
+            Work from the reports above; they are the whole input. No tool retrieves logs,
+            diffs, or PR data. Where they fall short, say so in `summary` and fix what they cover.
+
+            Do not run tests or try to validate; dependencies are not installed in this job.
+            Edit files and stop there; a later step commits, rebases, pushes, and comments on the PR.
+
+      # 直せない失敗に push すると CI → fix が空回りするため、push せず人間に委ねる。
+      - name: Check external give-up
+        id: external
+        if: steps.agent.outcome == 'success' && inputs.trigger == 'ci'
+        env:
+          STRUCTURED: ${{ steps.agent.outputs.structured-output }}
+        run: |
+          blocked="$(printf '%s' "$STRUCTURED" | jq -r '.blocked_by_external == true' 2>/dev/null || echo false)"
+          echo "give_up=${blocked}" >> "$GITHUB_OUTPUT"
+
+      # 失敗しても編集は push する (不整合は次の CI が落として次の fix に回る)。
+      - name: Regenerate lockfile and generated outputs
+        if: steps.agent.outcome == 'success' && steps.external.outputs.give_up != 'true'
+        continue-on-error: true
+        uses: omni-stove/.github/actions/agent-regen@main
+        with:
+          structured: ${{ steps.agent.outputs.structured-output }}
+          ci-failure: ${{ steps.context.outputs.ci-failure }}
+          command: ${{ inputs.regen-command }}
+          node-version: ${{ inputs.node-version }}
+
+      - name: Commit and push the fix
+        id: push
+        if: steps.agent.outcome == 'success' && steps.external.outputs.give_up != 'true'
+        uses: omni-stove/.github/actions/push-agent-fix@main
+        with:
+          ref: ${{ inputs.ref }}
+          pr-number: ${{ inputs.pr-number }}
+          structured: ${{ steps.agent.outputs.structured-output }}
+          github-token: ${{ steps.app.outputs.token }}
+          git-user-name: ${{ steps.app.outputs.bot-login }}
+          git-user-email: ${{ format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) }}
+
+      # エージェントが落ちても (push まで届かず result が空) 何が起きたか PR に残す。
+      - name: Post fix result
+        if: >-
+          !cancelled()
+          && steps.app.outcome == 'success'
+          && (steps.context.outputs.skip == 'true' || steps.context.outputs.run == 'true')
+        uses: omni-stove/.github/actions/post-fix-result@main
+        with:
+          pr-number: ${{ inputs.pr-number }}
+          result: ${{ steps.context.outputs.skip == 'true' && 'loop' || steps.external.outputs.give_up == 'true' && 'external' || steps.push.outputs.result }}
+          structured: ${{ steps.agent.outputs.structured-output }}
+          ref: ${{ inputs.ref }}
+          max-consecutive: ${{ inputs.max-consecutive }}
+          rate-limited: ${{ steps.agent.outputs.rate-limited }}
+          rate-limit-reset: ${{ steps.agent.outputs.rate-limit-reset }}
+          github-token: ${{ steps.app.outputs.token }}

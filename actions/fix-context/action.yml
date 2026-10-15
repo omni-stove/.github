@@ -1,0 +1,123 @@
+name: Fix Context
+description: |
+  自動修正のエージェントに渡す入力を決定論的に集める。エージェントはここで渡したものとコードだけで直す。
+    - ループ防止: 自動修正コミットが連続して上限に達していたら skip=true
+    - CI 失敗ログ (trigger=ci のとき): 失敗ジョブのログから原因に効くブロックだけを抽出する
+    - PR の説明と会話コメント: 作者の意図と議論の結論
+    - 未解決のインラインレビューコメント: [comment_id=N] 付き (fix-review-comments=false なら空)
+  直すものが何も無ければ run=false を出す。ロジックとテストは *.sh / *.bats を参照。
+
+inputs:
+  pr-number:
+    description: PR 番号
+    required: true
+  trigger:
+    description: 修正のきっかけ (ci | review)
+    required: true
+  fix-review-comments:
+    description: レビュー指摘も修正対象にするか
+    required: false
+    default: "true"
+  workflow-run-id:
+    description: trigger=ci のとき、失敗ログを引く CI run の ID
+    required: false
+    default: ""
+  bot-login:
+    description: 修正 bot の app slug (`[bot]` なし)。bot 自身の発言と対応済みスレッドを除く
+    required: false
+    default: ""
+  max-consecutive:
+    description: 自動修正コミットの連続上限
+    required: false
+    default: "3"
+  commit-prefix:
+    description: 自動修正コミットの件名の接頭辞
+    required: false
+    default: "[agent-fix]"
+  github-token:
+    description: PR の文脈とレビューコメントの取得に使うトークン
+    required: false
+    default: ${{ github.token }}
+  actions-token:
+    description: job ログの取得に使う actions read 権限のあるトークン (App のトークンでは job ログ API が空を返す)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  skip:
+    description: 連続上限に達していたら 'true'
+    value: ${{ steps.guard.outputs.skip }}
+  run:
+    description: 直すものがあれば 'true'
+    value: ${{ steps.should-run.outputs.run }}
+  ci-failure:
+    description: CI 失敗ログ (プロンプトに貼れる断片)
+    value: ${{ steps.ci-failure.outputs.body }}
+  pr-context:
+    description: PR の説明と会話コメント (プロンプトに貼れる断片)
+    value: ${{ steps.pr-context.outputs.body }}
+  review-comments:
+    description: 未解決のインラインレビューコメント (プロンプトに貼れる断片)
+    value: ${{ steps.review-comments.outputs.body }}
+
+runs:
+  using: composite
+  steps:
+    - name: Guard against fix loop
+      id: guard
+      shell: bash
+      env:
+        MAX_CONSECUTIVE: ${{ inputs.max-consecutive }}
+        COMMIT_PREFIX: ${{ inputs.commit-prefix }}
+      run: bash "$GITHUB_ACTION_PATH/guard-fix-loop.sh"
+
+    - name: Fetch CI failure log
+      id: ci-failure
+      if: steps.guard.outputs.skip != 'true' && inputs.trigger == 'ci' && inputs.workflow-run-id != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.actions-token }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ inputs.workflow-run-id }}
+      run: bash "$GITHUB_ACTION_PATH/fetch-ci-failure.sh"
+
+    - name: Fetch PR context
+      id: pr-context
+      if: steps.guard.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ inputs.pr-number }}
+        BOT_LOGIN: ${{ inputs.bot-login }}
+      run: bash "$GITHUB_ACTION_PATH/fetch-pr-context.sh"
+
+    - name: Fetch review comments
+      id: review-comments
+      if: steps.guard.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ inputs.pr-number }}
+        BOT_LOGIN: ${{ inputs.bot-login }}
+        FIX_REVIEW_COMMENTS: ${{ inputs.fix-review-comments }}
+      run: bash "$GITHUB_ACTION_PATH/fetch-review-comments.sh"
+
+    # インライン化できなかった指摘は会話コメント (pr-context) に入り専用の有無フラグを持たないため、
+    # trigger=review はインライン指摘が空でも走らせる。
+    - name: Decide whether to run the agent
+      id: should-run
+      if: steps.guard.outputs.skip != 'true'
+      shell: bash
+      env:
+        TRIGGER: ${{ inputs.trigger }}
+        HAS_CI_FAILURE_CONTEXT: ${{ steps.ci-failure.outputs.has_failure_context }}
+        HAS_REVIEW_COMMENTS: ${{ steps.review-comments.outputs.has_comments }}
+      run: |
+        if [ "$TRIGGER" != "review" ] && [ "$HAS_CI_FAILURE_CONTEXT" != "true" ] && [ "$HAS_REVIEW_COMMENTS" != "true" ]; then
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "No actionable CI failure lines or review comments; skipping auto-fix."
+        else
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        fi

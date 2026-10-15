@@ -64,8 +64,9 @@ App の Install App → omni-stove → All repositories (または使うリポ�
 
 ### agent App
 
-`issue-worker.yml` など agent が PR を作る workflow で `github.token` の代わりに使う。App token で作った PR では
-`pull_request` イベントで CI が起動する (`github.token` で作った PR では起動しない)。
+`issue-worker.yml` など agent が PR を作る workflow と、`ci.yml` / `ci-gate.yml` の `run-fix` (自動修正) の push で
+`github.token` の代わりに使う。App token で作った PR や push では `pull_request` イベントで CI が起動する
+(`github.token` では起動しない)。
 
 | 項目 | 値 |
 | --- | --- |
@@ -83,10 +84,10 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 
 | secret | 使う workflow | 値 |
 | --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
+| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review` / `run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
 | `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
-| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` | agent App の App ID / PEM。無ければ `github.token` で PR を作る |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci.yml` / `ci-gate.yml` (`run-fix`) | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正は無ければ起動しない |
 | `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare-worker.yml` | Cloudflare の API token |
 
 ### ラベルと必須チェック
@@ -97,6 +98,11 @@ install.sh が作る。手で作るときは次のとおり。
 | --- | --- |
 | `hotfix` / `revert` | `ci.yml` / `hotfix-revert-approve.yml` |
 | `bug` / `security` / `prototype` / `implementation` | `issue-worker.yml` |
+| `skip-autofix` / `force-autofix` | `ci.yml` / `ci-gate.yml` (`run-fix`) |
+
+レビュー指摘の自動修正を自分の PR で止めたい人は、既定ブランチの `.github/autofix-opt-out.yml` に GitHub の
+ユーザー名を書く (`users: [octocat, hubot]`)。lint / test の失敗の修正は止まらない。PR 1 件だけ止めるなら
+`skip-autofix`、載っている人がその PR だけ任せるなら `force-autofix` を付ける。
 
 ruleset / branch protection の必須チェックには `ci / CI Gate` (`ci` は呼び出し側の job 名) だけを登録する。
 Lint / Test / Review の個別ジョブは登録しない (スキップ時に pending のまま残るため)。

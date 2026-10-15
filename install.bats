@@ -378,3 +378,28 @@ teardown() {
   [[ "$output" == *"todo	gh auth login してから: gh label create prototype"* ]]
   [[ "$output" == *"todo	secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID"* ]]
 }
+
+@test "--fix turns on run-fix with actions read, the pnpm regen command, its labels and the agent App" {
+  run bash "$SCRIPT" --fix --provider codex
+  [ "$status" -eq 0 ]
+  grep -qx "      run-fix: true" .github/workflows/ci.yml
+  grep -qx "      fix-provider: \"codex\"" .github/workflows/ci.yml
+  grep -qx "      regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/ci.yml
+  grep -qx "      actions: read" .github/workflows/ci.yml
+  grep -q "label create skip-autofix" "$GH_LOG"
+  grep -q "label create force-autofix" "$GH_LOG"
+  [[ "$output" == *"AGENT_GH_APP_ID"* ]]
+  [[ "$output" == *"OPENAI_API_KEY"* ]]
+}
+
+@test "run-fix carries over on an update and stays off without --fix" {
+  bash "$SCRIPT" >/dev/null
+  ! grep -q "run-fix" .github/workflows/ci.yml
+  ! grep -q "actions: read" .github/workflows/ci.yml
+  ! grep -q "label create skip-autofix" "$GH_LOG"
+  bash "$SCRIPT" --fix >/dev/null
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx "      run-fix: true" .github/workflows/ci.yml
+  grep -qx "      actions: read" .github/workflows/ci.yml
+}

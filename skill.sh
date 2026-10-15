@@ -188,6 +188,8 @@ revert|5319e7|緊急避難口: CI を止めて approve する
 prototype|fbca04|Issue Worker: モックで良い試作を draft PR にする
 implementation|0e8a16|Issue Worker: 本実装の PR を作る
 security|e11d21|Issue Worker: 指摘箇所だけ直す修正 PR を作る
+skip-autofix|c5def5|この PR ではレビュー指摘を自動修正しない (lint / test の修正は続ける)
+force-autofix|c5def5|オプトアウトしていてもこの PR はレビュー指摘を自動修正する
 LABELS
 
 	owner="${GH_REPO%%/*}"
@@ -253,6 +255,7 @@ GitHub App / secrets / ラベル / ruleset の手順は上の README。reusable 
 - pnpm と lint / typecheck / test コマンドだけで足り、services / container / 独自 runner が要らない:
   書かずに install.sh に任せる (ラベル / secrets 確認 / ruleset まで行う。オプションは --help)。
     ${INSTALL_CMD} --review --ruleset
+  CI の失敗とレビュー指摘をエージェントに直させるなら --fix も付ける (agent App が要る)。
 - test だけが収まらない: ci.yml を run-test: false と gate: false で呼び、test ジョブを自前に書き、
   ci-gate.yml で集約する (呼び出し方は ci-gate.yml のヘッダー)。
 - lint や review まで収まらない、pnpm / Node の repo でない、ツールチェーンが複数ある:

@@ -1,0 +1,60 @@
+name: Push Agent Fix
+description: |
+  エージェントが編集した内容を 1 つの自動修正コミットにまとめ、最新の PR head に rebase して push する。
+  緊急避難口のラベルが付いていたら push しない。rebase がコンフリクトしたら積まずに result=conflict を返す。
+  ロジックとテストは push-agent-fix.sh / push-agent-fix.bats を参照。
+
+inputs:
+  ref:
+    description: push する PR の head ブランチ名
+    required: true
+  pr-number:
+    description: PR 番号 (ラベルの確認に使う)
+    required: true
+  structured:
+    description: エージェントの structured_output (JSON 文字列)。.summary をコミット件名に使う
+    required: false
+    default: ""
+  github-token:
+    description: push に使うトークン。push で CI を起動させるため agent App のトークンを渡す
+    required: true
+  git-user-name:
+    description: コミットの author 名
+    required: false
+    default: "github-actions[bot]"
+  git-user-email:
+    description: コミットの author メール
+    required: false
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+  bypass-labels:
+    description: push しないラベル (カンマ区切り)
+    required: false
+    default: "hotfix,revert"
+  commit-prefix:
+    description: コミット件名の接頭辞 (fix-context のループ防止と揃える)
+    required: false
+    default: "[agent-fix]"
+
+outputs:
+  result:
+    description: pushed | noop | conflict | skipped | failed
+    value: ${{ steps.push.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Commit and push
+      id: push
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PUSH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ inputs.pr-number }}
+        REF: ${{ inputs.ref }}
+        STRUCTURED: ${{ inputs.structured }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
+        BYPASS_LABELS: ${{ inputs.bypass-labels }}
+        COMMIT_PREFIX: ${{ inputs.commit-prefix }}
+      run: bash "$GITHUB_ACTION_PATH/push-agent-fix.sh"

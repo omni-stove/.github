@@ -57,3 +57,9 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -qx 'needs_regen=false' "$GITHUB_OUTPUT"
 }
+
+@test "true when the CI failure log shows an outdated lockfile" {
+  CI_FAILURE='ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile"' run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'needs_regen=true' "$GITHUB_OUTPUT"
+}

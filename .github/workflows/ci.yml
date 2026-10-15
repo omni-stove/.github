@@ -7,6 +7,9 @@ name: CI
 #   CI Gate と finalize だけが needs: [全部] で待ち合わせる。
 # - approve は PR 作成者とは別の identity が必要なため、reviewer 用 GitHub App の secrets を受ける。
 #   無ければ github.token で投稿する (github-actions[bot] が作った PR には approve できない)。
+# - run-fix なら finalize が同じ統合結果から自動修正を起動するかを決め、fix ジョブが agent-fix.yml を呼ぶ。
+#   lint / test が落ちていれば trigger=ci、レビュー指摘があれば trigger=review。修正の push で CI が
+#   再実行され、その結果がまた finalize に戻る。
 
 on:
   workflow_call:
@@ -89,6 +92,37 @@ on:
         description: レビュー対象から追加で除外するパスの glob (改行区切り)
         type: string
         default: ""
+      run-fix:
+        description: |
+          lint / test の失敗とレビュー指摘をエージェントに直させ、PR に push するか (agent-fix.yml)。
+          push で CI を再実行させるため AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY が要る (push はその App の
+          トークンで行う)。失敗ログを読むため、呼び出し側の permissions に actions: read が要る
+        type: boolean
+        default: false
+      fix-provider:
+        description: 自動修正を実行するエージェント (claude | codex)
+        type: string
+        default: "claude"
+      fix-tier:
+        description: 自動修正のモデルの tier (max | high | medium | low)
+        type: string
+        default: "medium"
+      fix-model:
+        description: 自動修正のモデルを直接指定する (空なら fix-tier から解決する)
+        type: string
+        default: ""
+      fix-instructions:
+        description: 修正指示に追記する文 (リポジトリ固有の規約や注意点)
+        type: string
+        default: ""
+      fix-opt-out-path:
+        description: レビュー指摘の自動修正を止めるユーザーを列挙したファイル (既定ブランチから読む)
+        type: string
+        default: ".github/autofix-opt-out.yml"
+      regen-command:
+        description: 自動修正が package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。空なら作り直さない
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
@@ -99,6 +133,10 @@ on:
       REVIEWER_GH_APP_ID:
         required: false
       REVIEWER_GH_APP_PRIVATE_KEY:
+        required: false
+      AGENT_GH_APP_ID:
+        required: false
+      AGENT_GH_APP_PRIVATE_KEY:
         required: false
     outputs:
       # gate: false のとき、呼び出し側の ci-gate.yml に渡す。
@@ -185,7 +223,7 @@ jobs:
         run: ${{ inputs.typecheck-command }}
 
   # test-jobs (または test-command 1 本) を matrix で並列に走らせる。fail-fast しないのは、
-  # 1 つが落ちても残りの結果を出し切って auto-fix / レビューの材料にするため。
+  # 1 つが落ちても残りの結果を出し切って自動修正 / レビューの材料にするため。
   # どれか 1 つでも failure なら test ジョブ全体が failure になり CI Gate が止める。
   test:
     name: Test (${{ matrix.name }})
@@ -405,18 +443,18 @@ jobs:
             review=${{ needs.review.result }}
 
   # ============================================================================
-  # レビュー確定 (lint / test / review の結果を統合して approve / request-changes を提出)
+  # レビュー確定と自動修正の起動判定 (lint / test / review の結果を統合する)
   # ============================================================================
   # !cancelled() で lint / test / review のいずれかが失敗しても必ず走り切らせる (fail-fast させない)。
   # always() にしないのは、concurrency の cancel-in-progress で run がキャンセルされた場合まで
   # 走ってしまうため (全 needs が cancelled → 失敗なし・指摘 0 件と誤読して approve してしまう)。
-  # 緊急避難口 / コンフリクトで changes が成功していない run では提出しない。
+  # 緊急避難口 / コンフリクトで changes が成功していない run では提出も修正もしない。
   finalize:
     needs: [changes, lint, test, review]
     if: >-
       !cancelled()
       && inputs.gate
-      && inputs.run-review
+      && (inputs.run-review || inputs.run-fix)
       && github.event_name == 'pull_request'
       && needs.changes.result == 'success'
       && needs.changes.outputs.conflicted != 'true'
@@ -427,18 +465,25 @@ jobs:
       pull-requests: write
     env:
       HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
+      HAS_AGENT_APP: ${{ secrets.AGENT_GH_APP_ID != '' && secrets.AGENT_GH_APP_PRIVATE_KEY != '' }}
+    outputs:
+      should-fix: ${{ steps.decide-fix.outputs.should-fix }}
+      trigger: ${{ steps.decide-fix.outputs.trigger }}
+      fix-review-comments: ${{ steps.decide-fix.outputs.fix-review-comments }}
     steps:
       # レビュー提出 (gh pr review) は PR 作成者と同じ identity では approve できないため、
       # reviewer 専用 App のトークンで提出する。
       - name: Generate reviewer App token
         id: reviewer-token
-        if: env.HAS_REVIEWER_APP == 'true'
+        if: inputs.run-review && env.HAS_REVIEWER_APP == 'true'
         uses: omni-stove/.github/actions/github-app-token@main
         with:
           app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
           private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
 
       - name: Finalize review
+        id: finalize
+        if: inputs.run-review
         uses: omni-stove/.github/actions/finalize-review@main
         with:
           pr-number: ${{ github.event.pull_request.number }}
@@ -447,3 +492,40 @@ jobs:
           review-result: ${{ needs.review.outputs.result }}
           github-token: ${{ steps.reviewer-token.outputs.token || github.token }}
           reviewer-login: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}
+
+      - name: Decide auto-fix
+        id: decide-fix
+        if: inputs.run-fix
+        uses: omni-stove/.github/actions/decide-fix@main
+        with:
+          lint-test-results: ${{ needs.lint.result }} ${{ needs.test.result }}
+          review-comment-count: ${{ steps.finalize.outputs.review-comment-count || '0' }}
+          has-agent-app: ${{ env.HAS_AGENT_APP }}
+          opt-out-path: ${{ inputs.fix-opt-out-path }}
+
+  # ============================================================================
+  # 自動修正 (CI の失敗とレビュー指摘を直して push する)
+  # ============================================================================
+  # finalize が !cancelled() で走るので、ここも !cancelled() を明示する。条件を書かないと暗黙の success() が
+  # needs の連鎖 (lint / test の failure) を見て skip される。
+  fix:
+    needs: finalize
+    if: ${{ !cancelled() && needs.finalize.result == 'success' && needs.finalize.outputs.should-fix == 'true' }}
+    # permissions を書かず呼び出し側のものを引き継ぐ。actions: read を書くと、それを渡していない呼び出し側では
+    # run-fix: false でも workflow の読み込み時に権限超過で落ちるため。
+    uses: omni-stove/.github/.github/workflows/agent-fix.yml@main
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      ref: ${{ github.event.pull_request.head.ref }}
+      trigger: ${{ needs.finalize.outputs.trigger }}
+      fix-review-comments: ${{ needs.finalize.outputs.fix-review-comments }}
+      # fix は同じ run の中で走るので、この run の ID を渡す。この時点で lint / test は完了している。
+      workflow-run-id: ${{ github.run_id }}
+      provider: ${{ inputs.fix-provider }}
+      tier: ${{ inputs.fix-tier }}
+      model: ${{ inputs.fix-model }}
+      allowed-bots: ${{ inputs.review-allowed-bots }}
+      instructions: ${{ inputs.fix-instructions }}
+      regen-command: ${{ inputs.regen-command }}
+      node-version: ${{ inputs.node-version }}
+    secrets: inherit

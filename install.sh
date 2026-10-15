@@ -4,6 +4,7 @@ set -euo pipefail
 ORG_REPO="${OMNI_STOVE_GITHUB_REPO:-omni-stove/.github}"
 REF=""
 REVIEW=""
+FIX=""
 PROVIDER=""
 AUTO_MERGE=false
 ISSUE_WORKER=false
@@ -19,6 +20,7 @@ usage: install.sh [options]
   更新では with: の値と uses: の参照を既存から引き継ぎ、オプションで指定したものだけ変える。
 
   --review             Code Review (run-review: true) を有効にする
+  --fix                lint / test の失敗とレビュー指摘の自動修正 (run-fix: true) を有効にし、skip-autofix / force-autofix ラベルを作る
   --provider <name>    レビューの provider (claude | codex)。既定: claude
   --auto-merge         auto-merge.yml も入れる (既にあれば指定しなくても更新する)
   --issue-worker       issue-worker.yml (Issue にラベルを付けるとエージェントが PR を作る) も入れ、prototype / implementation / security ラベルを作る (既にあれば指定しなくても更新する)
@@ -33,6 +35,7 @@ USAGE
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--review) REVIEW=true; shift ;;
+		--fix) FIX=true; shift ;;
 		--provider) PROVIDER="${2:?--provider には claude か codex を指定する}"; shift 2 ;;
 		--auto-merge) AUTO_MERGE=true; shift ;;
 		--issue-worker) ISSUE_WORKER=true; shift ;;
@@ -148,6 +151,7 @@ REF="${REF:-main}"
 [ -z "$EXISTING_CI" ] || say update "$EXISTING_CI の with: と参照 (@$REF) を引き継ぐ (--force で検出し直す)"
 
 [ -n "$REVIEW" ] || REVIEW="$(scalar "$(pick "$EXISTING_CI" run-review false)")"
+[ -n "$FIX" ] || FIX="$(scalar "$(pick "$EXISTING_CI" run-fix false)")"
 [ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$EXISTING_CI" review-provider "")")"
 [ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$EXISTING_ISSUE_WORKER" provider claude)")"
 check_provider "$PROVIDER"
@@ -224,6 +228,18 @@ REGEN_COMMAND="$(pick "$EXISTING_ISSUE_WORKER" regen-command "")"
 if [ -z "$REGEN_COMMAND" ] && [ -f pnpm-lock.yaml ]; then
 	REGEN_COMMAND="'pnpm install --lockfile-only --no-frozen-lockfile'"
 fi
+FIX_REGEN_COMMAND=""
+FIX_PROVIDER=""
+if [ "$FIX" = true ]; then
+	FIX_PROVIDER="$(pick "$EXISTING_CI" fix-provider "\"${PROVIDER}\"")"
+	FIX_REGEN_COMMAND="$(pick "$EXISTING_CI" regen-command "")"
+	if [ -z "$FIX_REGEN_COMMAND" ] && [ -f pnpm-lock.yaml ]; then
+		FIX_REGEN_COMMAND="'pnpm install --lockfile-only --no-frozen-lockfile'"
+	fi
+fi
+# The fix job reads the failed jobs' logs.
+CI_ACTIONS_PERMISSION=""
+[ "$FIX" != true ] || CI_ACTIONS_PERMISSION=$'\n      actions: read'
 
 write_file() {
 	local path="$1" content verb=created
@@ -263,7 +279,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      id-token: write
+      id-token: write${CI_ACTIONS_PERMISSION}
     with:
 $(with_block "$EXISTING_CI" \
 	"node-version=${NODE_VERSION_VALUE}" \
@@ -273,7 +289,10 @@ $(with_block "$EXISTING_CI" \
 	"run-test=${RUN_TEST}" \
 	"run-review=${REVIEW}" \
 	"review-provider=\"${PROVIDER}\"" \
-	"review-allowed-bots=${ALLOWED_BOTS}")
+	"review-allowed-bots=${ALLOWED_BOTS}" \
+	"run-fix=$([ "$FIX" = true ] && echo true)" \
+	"fix-provider=${FIX_PROVIDER}" \
+	"regen-command=${FIX_REGEN_COMMAND}")
     secrets: inherit
 EOF
 
@@ -347,6 +366,10 @@ if [ "$LABELS" = true ]; then
 	if [ "$GH_OK" = true ]; then
 		create_label hotfix b60205 "緊急避難口: CI を止めて approve する"
 		create_label revert 5319e7 "緊急避難口: CI を止めて approve する"
+		if [ "$FIX" = true ]; then
+			create_label skip-autofix c5def5 "この PR ではレビュー指摘を自動修正しない (lint / test の修正は続ける)"
+			create_label force-autofix c5def5 "オプトアウトしていてもこの PR はレビュー指摘を自動修正する"
+		fi
 		if [ "$ISSUE_WORKER" = true ]; then
 			create_label prototype fbca04 "Issue Worker: モックで良い試作を draft PR にする"
 			create_label implementation 0e8a16 "Issue Worker: 本実装の PR を作る"
@@ -362,7 +385,7 @@ if [ "$GH_OK" = true ]; then
 	owner="${REPO%%/*}"
 	secrets="$( { gh secret list --json name -q '.[].name' 2>/dev/null; gh secret list --org "$owner" --json name -q '.[].name' 2>/dev/null; } | sort -u || true)"
 	has_secret() { printf '%s\n' "$secrets" | grep -qx "$1"; }
-	if [ "$REVIEW" = true ] || [ "$ISSUE_WORKER" = true ]; then
+	if [ "$REVIEW" = true ] || [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ]; then
 		if [ "$PROVIDER" = codex ]; then
 			has_secret OPENAI_API_KEY && say secret "OPENAI_API_KEY" || todo "gh secret set OPENAI_API_KEY (organization secret でもよい)"
 		else
@@ -374,13 +397,13 @@ if [ "$GH_OK" = true ]; then
 		{ has_secret REVIEWER_GH_APP_ID && has_secret REVIEWER_GH_APP_PRIVATE_KEY; } && say secret "REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY" \
 			|| todo "reviewer 用 GitHub App の REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY を secrets に置く (無いと bot の PR に approve できない): https://github.com/${ORG_REPO}#reviewer-app"
 	fi
-	if [ "$ISSUE_WORKER" = true ]; then
+	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ]; then
 		{ has_secret AGENT_GH_APP_ID && has_secret AGENT_GH_APP_PRIVATE_KEY; } && say secret "AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY" \
-			|| todo "PR を作る agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動しない): https://github.com/${ORG_REPO}#agent-app"
+			|| todo "PR を作り自動修正を push する agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動せず、自動修正も動かない): https://github.com/${ORG_REPO}#agent-app"
 	fi
 else
 	[ "$REVIEW" != true ] || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), REVIEWER_GH_APP_ID, REVIEWER_GH_APP_PRIVATE_KEY"
-	[ "$ISSUE_WORKER" != true ] || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
+	{ [ "$ISSUE_WORKER" != true ] && [ "$FIX" != true ]; } || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
 fi
 
 ruleset_done=false
