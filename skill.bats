@@ -80,7 +80,7 @@ teardown() {
   [[ "$output" == *$'\ntask\ttest\n'* ]]
   [[ "$output" == *$'\nmarkers\tDockerfile .mise/tasks.toml\n'* ]]
   [[ "$output" == *$'\nworkflow\t.github/workflows/ci.yml: omni-stove/.github/.github/workflows/ci.yml@v2 actions/checkout@v4\n'* ]]
-  [[ "$output" == *$'\ncatalog\t'"$BATS_TEST_DIRNAME"' ('* ]]
+  [[ "$output" == *$'\ncatalog\t'"$BATS_TEST_DIRNAME"$'\n'* ]]
   [[ "$output" == *"--ref v2 --review --ruleset"* ]]
 }
 
@@ -109,28 +109,31 @@ teardown() {
   [[ "$output" == *"curl -fsSL https://raw.githubusercontent.com/omni-stove/.github/main/install.sh | bash -s -- --ref main --review --ruleset"* ]]
 }
 
-@test "prints the README and each action's and reusable workflow's interface, without their bodies" {
+@test "lists each action and reusable workflow with its purpose and input names, and points at the files" {
   run bash "$SCRIPT" --from "$BATS_TEST_DIRNAME"
   [ "$status" -eq 0 ]
-  [[ "$output" == *$'\n==> README omni-stove/.github\n# .github\n'* ]]
-  [[ "$output" == *$'\n==> action setup-pnpm-node\nuses\tomni-stove/.github/actions/setup-pnpm-node@main\nname: Setup pnpm & Node.js\n'* ]]
-  [[ "$output" == *$'  install-filter:\n    description: pnpm --filter value (empty = all packages)\n    default: ""\n\n==> workflow auto-merge.yml\n'* ]]
-  [[ "$output" == *$'\n==> action agent-run\nuses\tomni-stove/.github/actions/agent-run@main\n'* ]]
-  [[ "$output" == *$'\n==> workflow ci.yml\nuses\tomni-stove/.github/.github/workflows/ci.yml@main\nname: CI\n'* ]]
-  [[ "$output" == *"workflow_call:"* ]]
-  [[ "$output" != *"pnpm/action-setup"* ]]
-  [[ "$output" != *"Resolve test jobs"* ]]
+  [[ "$output" == *$'\nreadme\t'"$BATS_TEST_DIRNAME"'/README.md ('* ]]
+  [[ "$output" != *"# .github"* ]]
+  [[ "$output" == *$'\naction\tomni-stove/.github/actions/setup-pnpm-node@main\n  Install pnpm, Node.js, and dependencies with caching\n'* ]]
+  [[ "$output" == *$'\n  inputs: node-version frozen-lockfile install-filter\n'* ]]
+  [[ "$output" == *$'\naction\tomni-stove/.github/actions/decide-fix@main\n'* ]]
+  [[ "$output" == *$'\n  outputs: should-fix trigger fix-review-comments\n'* ]]
+  [[ "$output" == *$'\nworkflow\tomni-stove/.github/.github/workflows/ci.yml@main\n  Lint / Test / Code Review'* ]]
+  [[ "$output" == *$'\nworkflow\tomni-stove/.github/.github/workflows/auto-merge.yml@main\n  Auto Merge\n'* ]]
+  [[ "$output" == *$'\n  secrets: CLOUDFLARE_API_TOKEN\n'* ]]
+  [[ "$output" != *"description:"* ]]
   [[ "$output" == *$'\n==> next\n'* ]]
+  [ "${#output}" -lt 20000 ]
 }
 
 @test "fetches the catalog as a tarball through gh and keeps it on disk" {
   run bash "$SCRIPT" --ref v3
   [ "$status" -eq 0 ]
   grep -q "api repos/omni-stove/.github/tarball/v3" "$GH_LOG"
-  dir="$(printf '%s\n' "$output" | sed -n 's/^catalog\t\(.*\) (.*/\1/p')"
+  dir="$(printf '%s\n' "$output" | sed -n 's/^catalog\t//p')"
   [ -f "$dir/README.md" ]
   [ -f "$dir/actions/ci-gate/action.yml" ]
-  [[ "$output" == *$'\nuses\tomni-stove/.github/actions/ci-gate@v3\n'* ]]
+  [[ "$output" == *$'\naction\tomni-stove/.github/actions/ci-gate@v3\n'* ]]
 }
 
 @test "fails when the catalog cannot be fetched" {

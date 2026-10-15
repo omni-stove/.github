@@ -17,6 +17,8 @@
 #   LABELS         - PR に付けるラベル (スペース区切り、任意)
 #   DRAFT          - "true" なら draft PR にする (任意)
 #   START_SHA      - エージェント実行前の HEAD (任意)。エージェントが commit してしまった変更も拾う
+#   AGENT_OUTCOME  - エージェントのステップの outcome (既定: success)。success 以外なら、変更があれば
+#                    draft PR にし、無ければ Issue に失敗を書いて非ゼロで終える
 #   GH_TOKEN       - gh 認証用
 #   GH_CMD / CREATE_PR_CMD - テストで差し替える (既定: gh / 隣の create-pr.sh)
 # 出力 (GITHUB_OUTPUT があれば): pr_url / pr_number (PR を作らなかったときは空)
@@ -57,6 +59,11 @@ approach="$(strip_closing_keywords "${approach}")"
 verification="$(strip_closing_keywords "${verification}")"
 review_points="$(strip_closing_keywords "${review_points}")"
 
+# エージェントが途中で落ちたり、ツールを拒否され続けて理由も返さずに終えたりした run を、
+# PR も Issue のコメントも無い成功扱いにしないため、変更なしの判定前に覚えておく。
+reason_given=true
+[ -n "${message}${title}" ] || reason_given=false
+agent_outcome="${AGENT_OUTCOME:-success}"
 [ -n "${message}" ] || message="${title:-Apply changes from issue}"
 [ -n "${title}" ] || title="${message}"
 
@@ -74,8 +81,17 @@ fi
 # PR が無いと Issue 側は無言になるので、理由を Issue にコメントして残す。コメントの失敗は成否に影響させない。
 if [ "$has_changes" = false ]; then
   echo "no changes to commit; skipping PR" >&2
-  if [ -n "${ISSUE:-}" ]; then
+  failed=false
+  if [ "$agent_outcome" != "success" ]; then
+    failed=true
+    comment="エージェントが途中で失敗した (${agent_outcome}) ため、PR は作成していない。"
+  elif [ "$reason_given" = false ]; then
+    failed=true
+    comment="エージェントはコードを変更せず、理由も返さずに終了したため、PR は作成していない。ツールの拒否などで作業できなかった可能性がある。"
+  else
     comment="エージェントはコードを変更せずに終了したため、PR は作成していない。"$'\n\n'"> ${message//$'\n'/$'\n'> }"
+  fi
+  if [ -n "${ISSUE:-}" ]; then
     if [ -n "${GITHUB_RUN_ID:-}" ]; then
       comment="${comment}"$'\n\n'"実行ログ: ${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
     fi
@@ -84,8 +100,15 @@ if [ "$has_changes" = false ]; then
   fi
   output pr_url ""
   output pr_number ""
+  if [ "$failed" = true ]; then
+    echo "::error::${comment}"
+    exit 1
+  fi
   exit 0
 fi
+
+# 途中で落ちたエージェントの編集は未完成かもしれないので、レビュー待ちにせず draft で出す。
+[ "$agent_outcome" = "success" ] || DRAFT=true
 
 issue_ref=""
 [ -z "${ISSUE:-}" ] || issue_ref="- ${issue_keyword} #${ISSUE}"$'\n\n'

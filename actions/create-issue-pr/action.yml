@@ -37,6 +37,12 @@ inputs:
     description: push と PR 作成に使うトークン。github.token で作った PR では pull_request の workflow が起動しない
     required: false
     default: ${{ github.token }}
+  agent-outcome:
+    description: >
+      エージェントのステップの outcome。success 以外なら、変更があれば draft PR にし、無ければ Issue に失敗を書いて
+      このステップを失敗させる。エージェントが理由を返さずに変更なしで終えたときも失敗させる
+    required: false
+    default: "success"
   git-user-name:
     description: コミットの author 名 (git identity が未設定のとき)
     required: false
@@ -68,6 +74,7 @@ runs:
         LABELS: ${{ inputs.labels }}
         DRAFT: ${{ inputs.draft }}
         START_SHA: ${{ inputs.start-sha }}
+        AGENT_OUTCOME: ${{ inputs.agent-outcome }}
         GH_TOKEN: ${{ inputs.github-token }}
         GIT_USER_NAME: ${{ inputs.git-user-name }}
         GIT_USER_EMAIL: ${{ inputs.git-user-email }}

@@ -213,30 +213,45 @@ LABELS
 	fi
 fi
 
-# The interface of an action is the yml before runs:, of a workflow the yml before jobs:.
-interface() { awk -v stop="$2" '$0 ~ stop { exit } { print }' "$1" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; }
+# One entry per action / reusable workflow: what it is for and the names of its inputs, outputs and secrets.
+# The full interfaces stay in the catalog on disk, because printing them all overflows the reader's output limit.
+# The summary is the first line of description:, or for a workflow, which has none, of its header comment, else its name.
+summary() {
+	awk -v stop="$2" '
+		$0 ~ stop { exit }
+		/^name:/ { title = $0; sub(/^name:[[:space:]]*/, "", title); next }
+		/^#/ && desc == "" && !want { s = $0; sub(/^#[[:space:]]*/, "", s); if (s != "") desc = s; next }
+		/^description:/ { s = $0; sub(/^description:[[:space:]]*/, "", s); if (s ~ /^[|>]/) want = 1; else desc = s; next }
+		want && NF { s = $0; sub(/^[[:space:]]+/, "", s); desc = s; want = 0; next }
+		match($0, /^[[:space:]]*(inputs|outputs|secrets):[[:space:]]*$/) {
+			cur = $0; sub(/^[[:space:]]*/, "", cur); sub(/:.*/, "", cur)
+			ind = match($0, /[^ ]/) - 1; next
+		}
+		cur != "" && NF && $0 !~ /^[[:space:]]*#/ {
+			i = match($0, /[^ ]/) - 1
+			if (i <= ind) cur = ""
+			else if (i == ind + 2 && match($0, /^[[:space:]]*[A-Za-z0-9_-]+:/)) { k = $0; sub(/^[[:space:]]*/, "", k); sub(/:.*/, "", k); names[cur] = names[cur] " " k }
+		}
+		END {
+			print "  " (desc != "" ? desc : title)
+			for (j = 1; j <= 3; j++) { c = (j == 1 ? "inputs" : j == 2 ? "outputs" : "secrets"); if (names[c] != "") print "  " c ":" names[c] }
+		}' "$1"
+}
 
 section "catalog ${ORG_REPO}@${REF}"
-say catalog "$CATALOG (全文はここを読む)"
-
-section "README ${ORG_REPO}"
-cat "$CATALOG/README.md"
-
+say catalog "$CATALOG"
+say readme "$CATALOG/README.md (GitHub App / secrets / ラベル / ruleset の手順)"
 for f in "$CATALOG"/actions/*/action.yml "$CATALOG"/actions/*/action.yaml; do
 	[ -e "$f" ] || continue
 	name="$(basename "$(dirname "$f")")"
-	section "action $name"
-	say uses "${ORG_REPO}/actions/${name}@${REF}"
-	interface "$f" '^runs:'
+	say action "${ORG_REPO}/actions/${name}@${REF}"
+	summary "$f" '^runs:'
 done
-
 for f in "$CATALOG"/.github/workflows/*.yml "$CATALOG"/.github/workflows/*.yaml; do
 	[ -e "$f" ] || continue
 	grep -q 'workflow_call' "$f" || continue
-	name="$(basename "$f")"
-	section "workflow $name"
-	say uses "${ORG_REPO}/.github/workflows/${name}@${REF}"
-	interface "$f" '^jobs:'
+	say workflow "${ORG_REPO}/.github/workflows/$(basename "$f")@${REF}"
+	summary "$f" '^jobs:'
 done
 
 if [ "$GH_AUTH" = true ]; then
@@ -248,8 +263,9 @@ fi
 section "next"
 cat <<NEXT
 上の repo の事実に合う workflow を .github/workflows/ に書く。部品は ${ORG_REPO}@${REF} の reusable workflow と
-composite action。挙動・入力・出力・既定値は各 yml とそのヘッダーコメントが正 (インターフェースは上、全文は ${CATALOG})。
-GitHub App / secrets / ラベル / ruleset の手順は上の README。reusable workflow の jobs: が composite action の並べ方の実例。
+composite action。上の catalog は用途と入出力の名前だけなので、使うものは ${CATALOG} の yml を読む
+(挙動・入力・出力・既定値は各 yml とそのヘッダーコメントが正)。GitHub App / secrets / ラベル / ruleset の手順は
+${CATALOG}/README.md。reusable workflow の jobs: が composite action の並べ方の実例。
 
 形は、この repo の lint / test / review のうちどこまでが reusable workflow の ci.yml に収まるかで決める。
 - pnpm と lint / typecheck / test コマンドだけで足り、services / container / 独自 runner が要らない:
@@ -257,7 +273,7 @@ GitHub App / secrets / ラベル / ruleset の手順は上の README。reusable 
     ${INSTALL_CMD} --review --ruleset
   CI の失敗とレビュー指摘をエージェントに直させるなら --fix も付ける (agent App が要る)。
 - test だけが収まらない: ci.yml を run-test: false と gate: false で呼び、test ジョブを自前に書き、
-  ci-gate.yml で集約する (呼び出し方は ci-gate.yml のヘッダー)。
+  ci-gate.yml で集約する (呼び出し方は ci-gate.yml のヘッダー。自動修正は ci-gate.yml の run-fix)。
 - lint や review まで収まらない、pnpm / Node の repo でない、ツールチェーンが複数ある:
   composite action を直接並べて書く。
 
@@ -266,6 +282,9 @@ hotfix-revert-approve.yml を並べる。concurrency で同じ PR の古い run 
 参照は @${REF} で揃える。secrets は inherit で渡す。
 コマンドは上の script / task にあるものだけを使い、無いものは作らず利用者に返す。
 Issue Worker / auto-merge / deploy は、この repo にその前提 (ラベル運用、wrangler 等) が見えるときだけ入れる。
+自動修正を自前で組むなら、finalize 相当の job で actions/decide-fix を呼び、should-fix なら agent-fix.yml を呼ぶ。
+どの形でも自動修正には呼び出し側の permissions の actions: read と agent App が要り、skip-autofix / force-autofix の
+label-create はそのときだけ実行する。
 
 書き終えたら actionlint があれば通す。利用者に渡すもの: secrets-missing のうち使う workflow が要るものと
 GitHub App (README の手順)、label-create 行 (gh が使えるなら実行してよい)、

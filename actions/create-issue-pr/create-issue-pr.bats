@@ -54,7 +54,7 @@ teardown() {
 
 @test "skips the PR when the working tree is clean and writes empty outputs" {
   echo 0 > "$DIRTY"
-  BRANCH=agent-fix/issue-1 run bash "$SCRIPT"
+  STRUCTURED='{"message":"修正不要"}' BRANCH=agent-fix/issue-1 run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   ! grep -q 'create-pr' "$CALLS"
   grep -qx 'pr_url=' "$GITHUB_OUTPUT"
@@ -159,4 +159,25 @@ teardown() {
   printf '#!/usr/bin/env bash\necho "gh should not be called" >&2\nexit 3\n' > "$GH_CMD"
   STRUCTURED='{"message":"m","title":"t"}' BRANCH=b run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+}
+
+@test "fails and says so on the issue when the agent ends clean without a reason" {
+  echo 0 > "$DIRTY"
+  STRUCTURED='' BRANCH=b ISSUE=812 run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  grep -q '理由も返さずに終了した' "${ROOT}/gh-calls"
+  grep -qx 'pr_url=' "$GITHUB_OUTPUT"
+}
+
+@test "fails and says so on the issue when the agent step failed with no changes" {
+  echo 0 > "$DIRTY"
+  STRUCTURED='{"message":"m"}' AGENT_OUTCOME=failure BRANCH=b ISSUE=813 run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  grep -q 'エージェントが途中で失敗した (failure)' "${ROOT}/gh-calls"
+}
+
+@test "opens a draft PR from what a failed agent left" {
+  AGENT_OUTCOME=failure BRANCH=b run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q -- '--draft' "$CALLS"
 }

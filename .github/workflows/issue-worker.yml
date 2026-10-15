@@ -208,8 +208,10 @@ jobs:
 
             Stop after editing — do not commit, push, or open a PR.
 
-      # 失敗しても PR は作る (不整合は CI が落として知らせる)。
+      # 失敗しても PR は作る (不整合は CI が落として知らせる)。エージェントが落ちても、残った編集を
+      # draft PR にするか Issue に失敗を書くため、後続は !cancelled() で走らせる。
       - name: Regenerate lockfile and generated outputs
+        if: ${{ !cancelled() && steps.start.outcome == 'success' }}
         continue-on-error: true
         uses: omni-stove/.github/actions/agent-regen@main
         with:
@@ -219,9 +221,11 @@ jobs:
 
       - name: Create PR
         id: pr
+        if: ${{ !cancelled() && steps.start.outcome == 'success' }}
         uses: omni-stove/.github/actions/create-issue-pr@main
         with:
           structured: ${{ steps.agent.outputs.structured-output }}
+          agent-outcome: ${{ steps.agent.outcome }}
           branch: ${{ needs.resolve.outputs.branch }}
           base: ${{ inputs.base-branch || github.event.repository.default_branch }}
           issue-number: ${{ needs.resolve.outputs.number }}
