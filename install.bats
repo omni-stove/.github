@@ -204,9 +204,9 @@ teardown() {
   [[ "$output" == *"todo	ruleset / branch protection"* ]]
 }
 
-@test "always ends with the required-check and commit todos" {
+@test "always ends with the required-check todo and never dictates a commit" {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"todo	ruleset / branch protection の必須チェックに \"ci / CI Gate\" だけを登録する"* ]]
-  [[ "$output" == *"todo	git add .github/workflows && git commit"* ]]
+  [[ "$output" != *"git commit"* ]]
 }

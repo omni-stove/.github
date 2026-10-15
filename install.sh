@@ -274,5 +274,4 @@ JSON
 fi
 [ "$ruleset_done" = true ] || todo "ruleset / branch protection の必須チェックに \"ci / CI Gate\" だけを登録する (--ruleset で自動化できる)"
 
-todo "git add .github/workflows && git commit -m 'ci: ${ORG_REPO} の CI Gate を導入'"
 for t in "${todos[@]}"; do say todo "$t"; done
