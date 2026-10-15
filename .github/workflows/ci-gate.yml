@@ -1,0 +1,116 @@
+name: CI Gate
+
+# 呼び出し側に独自の test ジョブがあるときに、ci.yml (gate: false) と test ジョブの結果を
+# まとめて CI Gate と finalize にする reusable workflow。
+#
+# 呼び出し側:
+#   jobs:
+#     ci:
+#       uses: omni-stove/.github/.github/workflows/ci.yml@main
+#       with: { run-test: false, gate: false, run-review: true }
+#       secrets: inherit
+#     test-unit: ...   # 自由に書く (services / container も可)
+#     test-e2e: ...
+#     gate:
+#       needs: [ci, test-unit, test-e2e]
+#       if: always()
+#       uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
+#       permissions: { contents: read, pull-requests: write }
+#       with:
+#         results: ${{ toJSON(needs) }}
+#         conflicted: ${{ needs.ci.outputs.conflicted }}
+#         review-comments: ${{ needs.ci.outputs.review-comments }}
+#         review-result: ${{ needs.ci.outputs.review-result }}
+#       secrets: inherit
+#
+# 必須チェックには "gate / CI Gate" を登録する。
+
+on:
+  workflow_call:
+    inputs:
+      results:
+        description: 集約するジョブの結果 (呼び出し側の `toJSON(needs)`)
+        type: string
+        required: true
+      conflicted:
+        description: ci.yml の outputs.conflicted
+        type: string
+        default: "false"
+      review-comments:
+        description: ci.yml の outputs.review-comments
+        type: string
+        default: ""
+      review-result:
+        description: ci.yml の outputs.review-result
+        type: string
+        default: ""
+      finalize:
+        description: approve / request-changes を提出するか (ci.yml を run-review で呼んでいるときだけ true にする)
+        type: boolean
+        default: true
+    secrets:
+      REVIEWER_GH_APP_ID:
+        required: false
+      REVIEWER_GH_APP_PRIVATE_KEY:
+        required: false
+
+jobs:
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Gate on job results
+        uses: omni-stove/.github/actions/ci-gate@main
+        with:
+          results: ${{ inputs.results }}
+
+  # 緊急避難口 / コンフリクトの run では提出しない。needs が全て cancelled な run
+  # (concurrency のキャンセル) では呼び出し側の if: always() で来ても提出しないよう、
+  # ここで !cancelled() を見る。
+  finalize:
+    if: >-
+      !cancelled()
+      && inputs.finalize
+      && github.event_name == 'pull_request'
+      && inputs.conflicted != 'true'
+      && !contains(github.event.pull_request.labels.*.name, 'hotfix')
+      && !contains(github.event.pull_request.labels.*.name, 'revert')
+      && !startsWith(github.head_ref, 'revert-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Collect job results
+        id: results
+        env:
+          RESULTS: ${{ inputs.results }}
+        run: |
+          set -euo pipefail
+          list=$(jq -r '[.[] | .result // empty] | join(" ")' <<<"$RESULTS")
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+          echo "job results: ${list}"
+
+      - name: Generate reviewer App token
+        id: reviewer-token
+        if: env.HAS_REVIEWER_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
+
+      - name: Finalize review
+        uses: omni-stove/.github/actions/finalize-review@main
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          lint-test-results: ${{ steps.results.outputs.list }}
+          comments-json: ${{ inputs.review-comments }}
+          review-result: ${{ inputs.review-result }}
+          github-token: ${{ steps.reviewer-token.outputs.token || github.token }}
+          reviewer-login: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}

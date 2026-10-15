@@ -1,0 +1,55 @@
+name: CI Gate
+description: |
+  複数ジョブの結果を集約して 1 つの必須チェックにする。
+  needs の result を受け取り、failure / cancelled が 1 つでもあれば失敗させる (skipped は失敗ではない)。
+  緊急避難口として、PR に hotfix / revert ラベルが付いている、または revert- ブランチなら
+  結果にかかわらず success にする。
+
+  ruleset の必須チェックには、このアクションを呼ぶジョブ (例: "ci / CI Gate") だけを登録する。
+  paths-filter 等で個別ジョブがスキップされても必須チェックが pending のまま残らない。
+
+inputs:
+  results:
+    description: |
+      集約するジョブの結果。次のどちらかの形式で渡す。
+        - `${{ toJSON(needs) }}` (JSON オブジェクト)
+        - 1 行 1 件の `name=result` または `result` (success / failure / skipped / cancelled)
+    required: true
+  bypass-labels:
+    description: 結果にかかわらず success にするラベル (カンマ区切り。大文字小文字は区別しない)
+    required: false
+    default: "hotfix,revert"
+  bypass-branch-prefixes:
+    description: 結果にかかわらず success にする head ブランチ名の接頭辞 (カンマ区切り)
+    required: false
+    default: "revert-"
+  labels:
+    description: PR のラベル名の JSON 配列 (既定は現在の PR のラベル)
+    required: false
+    default: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+  head-ref:
+    description: PR の head ブランチ名 (既定は github.head_ref)
+    required: false
+    default: ${{ github.head_ref }}
+
+outputs:
+  bypassed:
+    description: 緊急避難口で素通しにしたら 'true'
+    value: ${{ steps.gate.outputs.bypassed }}
+  failed-jobs:
+    description: failure / cancelled だったジョブ名 (空白区切り)
+    value: ${{ steps.gate.outputs.failed_jobs }}
+
+runs:
+  using: composite
+  steps:
+    - name: Gate on job results
+      id: gate
+      shell: bash
+      env:
+        RESULTS: ${{ inputs.results }}
+        BYPASS_LABELS: ${{ inputs.bypass-labels }}
+        BYPASS_BRANCH_PREFIXES: ${{ inputs.bypass-branch-prefixes }}
+        LABELS_JSON: ${{ inputs.labels }}
+        HEAD_REF: ${{ inputs.head-ref }}
+      run: bash "$GITHUB_ACTION_PATH/ci-gate.sh"

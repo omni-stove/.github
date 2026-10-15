@@ -1,0 +1,90 @@
+name: PR コンフリクト判定
+description: |
+  PR がベースブランチとマージコンフリクトしているか (mergeable_state == 'dirty') を判定する。
+  コンフリクトしている PR で重い CI を走らせないためのゲートに使う。
+  conflicted == 'true' のとき、呼び出し側は後続ジョブを needs + if でスキップしてコストを削減する。
+
+  ただし PR の opened (新規作成) イベントでは、どのみち初回のレビュー / テストは必要なため
+  判定をスキップして必ず conflicted=false を返す。また opened 直後は GitHub が mergeable を
+  まだ計算しておらず mergeable_state='unknown' のことが多く、判定が不安定でもある。
+  コンフリクト判定が効くのは synchronize / reopened など 2 回目以降のイベント。
+
+inputs:
+  pr-number:
+    description: 判定対象の PR 番号
+    required: true
+  github-token:
+    description: GitHub API トークン (既定は github.token)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  conflicted:
+    description: コンフリクトしていれば 'true'、していなければ 'false'
+    value: ${{ steps.check.outputs.conflicted }}
+  mergeable-state:
+    description: GitHub が返した mergeable_state の生値 (デバッグ用)
+    value: ${{ steps.check.outputs.mergeable_state }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v8
+      id: check
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const prNumber = Number('${{ inputs.pr-number }}');
+
+          // PR 新規作成 (opened) 時は、初回のレビュー / テストはどのみち必要なので
+          // コンフリクト判定をスキップして必ず走らせる (conflicted=false)。
+          const eventAction = context.payload.action;
+          if (eventAction === 'opened') {
+            console.log(`PR #${prNumber} は opened イベントのためコンフリクト判定をスキップし CI を実行します。`);
+            core.setOutput('conflicted', 'false');
+            core.setOutput('mergeable_state', 'skipped-on-opened');
+            return;
+          }
+
+          // mergeable / mergeable_state は GitHub 側が裏で非同期計算するため、PR を
+          // 取得した直後は mergeable=null / mergeable_state='unknown' のことがある。
+          // null の間は短い間隔でリトライし、確定した state を読む。
+          // 確定しないまま上限に達した場合は「コンフリクトとは断定しない」(false) 側に倒す。
+          const maxAttempts = 5;
+          let mergeableState = 'unknown';
+          let mergeable = null;
+
+          try {
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: prNumber,
+              });
+              mergeable = pr.mergeable;
+              mergeableState = pr.mergeable_state;
+              console.log(`attempt ${attempt}: mergeable=${mergeable}, mergeable_state=${mergeableState}`);
+
+              if (mergeable !== null && mergeableState !== 'unknown') break;
+
+              if (attempt < maxAttempts) {
+                await new Promise((r) => setTimeout(r, 3000));
+              }
+            }
+          } catch (e) {
+            // レート制限や一時的な 5xx などで例外が発生した場合、CI 全体を止めないよう
+            // 安全側 (conflicted=false) に倒してジョブを継続する。
+            console.log(`github.rest.pulls.get で例外が発生しました: ${e}。安全側 (conflicted=false) に倒して CI を継続します。`);
+            core.setOutput('conflicted', 'false');
+            core.setOutput('mergeable_state', 'unknown');
+            return;
+          }
+
+          const conflicted = mergeableState === 'dirty';
+          core.setOutput('conflicted', conflicted ? 'true' : 'false');
+          core.setOutput('mergeable_state', mergeableState);
+
+          if (conflicted) {
+            core.notice(`PR #${prNumber} はマージコンフリクトしています (mergeable_state=dirty)。CI をスキップします。`);
+          } else {
+            console.log(`PR #${prNumber} はコンフリクトしていません (mergeable_state=${mergeableState})。`);
+          }

@@ -1,0 +1,105 @@
+name: Hotfix/Revert Approve
+
+# 緊急避難口。PR に hotfix / revert ラベルが付いたら実行中の CI run をキャンセルし、
+# reviewer App で approve を出して CI の request-changes によるマージブロックを外す。
+# GitHub の Revert ボタンで生成された revert- ブランチの PR は、ラベルがなくても
+# opened / reopened で同じ処理を行う。以降の push では ci.yml が changes をスキップし、
+# CI Gate は素通しで success になる。
+#
+# 呼び出し側:
+#   on:
+#     pull_request:
+#       types: [labeled, opened, reopened]
+#   jobs:
+#     approve:
+#       uses: omni-stove/.github/.github/workflows/hotfix-revert-approve.yml@main
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      ci-workflow:
+        description: キャンセルする CI の workflow ファイル名 (呼び出し側リポジトリの .github/workflows/ 配下)
+        type: string
+        default: "ci.yml"
+      approve-body:
+        description: approve の本文
+        type: string
+        default: "hotfix / revert のため CI のレビュー判定を待たずに approve します。CODEOWNER の approve は別途必要です。"
+    secrets:
+      REVIEWER_GH_APP_ID:
+        required: false
+      REVIEWER_GH_APP_PRIVATE_KEY:
+        required: false
+
+jobs:
+  approve:
+    name: Emergency Approve
+    if: >-
+      github.event_name == 'pull_request'
+      && (github.event.label.name == 'hotfix'
+        || github.event.label.name == 'revert'
+        || contains(github.event.pull_request.labels.*.name, 'hotfix')
+        || contains(github.event.pull_request.labels.*.name, 'revert')
+        || startsWith(github.event.pull_request.head.ref, 'revert-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+    env:
+      HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Cancel in-flight CI runs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          WORKFLOW: ${{ inputs.ci-workflow }}
+        run: |
+          set -euo pipefail
+          for status in queued in_progress; do
+            gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch "$BRANCH" \
+              --status "$status" --json databaseId --jq '.[].databaseId' \
+            | while read -r run_id; do
+                [ -n "$run_id" ] || continue
+                gh run cancel "$run_id" --repo "$REPO" || true
+              done
+          done
+
+      # PR 作成者と同じ identity では approve できないため reviewer App で出す。
+      - name: Generate reviewer App token
+        id: reviewer-token
+        if: env.HAS_REVIEWER_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
+
+      # 以前の request-changes が残っていると approve を出しても古い判定が履歴に残るだけで
+      # 解除されるので、自分の CHANGES_REQUESTED は明示的に dismiss してから approve する。
+      - name: Dismiss stale change requests and approve
+        env:
+          GH_TOKEN: ${{ steps.reviewer-token.outputs.token || github.token }}
+          REVIEWER_LOGIN: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BODY: ${{ inputs.approve-body }}
+        run: |
+          set -euo pipefail
+          reviews=$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate 2>/dev/null || echo "")
+          if [ -n "$reviews" ]; then
+            ids=$(jq -r --arg login "$REVIEWER_LOGIN" \
+              '.[] | select(.state == "CHANGES_REQUESTED") | select(.user.login == $login) | .id' \
+              <<<"$reviews" 2>/dev/null || echo "")
+            for id in $ids; do
+              gh api --method PUT "repos/${REPO}/pulls/${PR}/reviews/${id}/dismissals" \
+                -f message="hotfix / revert のため、この指摘は緊急 approve で置き換えます。" \
+                -f event="DISMISS" >/dev/null 2>&1 \
+                && echo "dismissed stale CHANGES_REQUESTED review ${id}" \
+                || echo "::warning::review ${id} の dismiss に失敗しました (approve は続行します)。"
+            done
+          fi
+          gh pr review "$PR" --repo "$REPO" --approve -b "$BODY"

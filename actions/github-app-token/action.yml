@@ -1,0 +1,44 @@
+name: GitHub App Token
+description: |
+  GitHub App の installation access token を生成する。
+  token に加えて、レビュー提出や dismiss の対象を絞るための bot login (`<app-slug>[bot]`) も返す。
+  installation access token では `GET /app` も `gh api user` も使えず実行時に自分の identity を
+  引けないため、token 生成時に得られる app-slug から組み立てて渡す。
+
+inputs:
+  app-id:
+    description: GitHub App の App ID (Client ID でも可)
+    required: true
+  private-key:
+    description: GitHub App の Private Key (PEM)
+    required: true
+  owner:
+    description: token を発行する owner (既定は現在のリポジトリの owner)
+    required: false
+    default: ""
+  repositories:
+    description: token の対象リポジトリ (カンマ区切り。空なら現在のリポジトリのみ)
+    required: false
+    default: ""
+
+outputs:
+  token:
+    description: 生成された installation access token
+    value: ${{ steps.create-token.outputs.token }}
+  app-slug:
+    description: GitHub App の slug
+    value: ${{ steps.create-token.outputs.app-slug }}
+  bot-login:
+    description: App の bot login (`<app-slug>[bot]`)
+    value: ${{ steps.create-token.outputs.app-slug }}[bot]
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/create-github-app-token@v3
+      id: create-token
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}

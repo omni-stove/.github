@@ -1,5 +1,36 @@
 name: CI
 
+# Lint / Test / Code Review を 1 つの reusable workflow に統合し、全結果を "CI Gate" という
+# 単一の必須チェックに集約する。
+#
+#   changes ─┬─ lint ───┬─ CI Gate   (必須チェック: failure / cancelled が 1 つでもあれば失敗)
+#            ├─ test ───┤
+#            └─ review ─┴─ finalize  (approve / request-changes を提出。run-review のときだけ)
+#
+# - changes はコンフリクト判定だけを行う。コンフリクト PR ではどうせマージできないので
+#   lint / test / review を一切走らせない。
+# - lint / test / review は互いに needs で繋がない (並列・fail-fast しない)。
+#   CI Gate と finalize だけが needs: [全部] で待ち合わせる。
+# - hotfix / revert ラベル、revert- ブランチは緊急避難口。changes がスキップされて
+#   lint / test / review も連鎖スキップされ、CI Gate は素通しで success になる。
+# - review は Claude Code が指摘を構造化出力 ({"comments":[...]}) で返し、インラインコメント
+#   として投稿する。finalize が lint / test の結果と指摘件数から approve / request-changes を
+#   決める (テストが落ちている PR を approve しない)。
+# - approve は PR 作成者とは別の identity が必要なため、reviewer 用 GitHub App の secrets
+#   (REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY) を渡す。無ければ github.token で投稿する
+#   (github-actions[bot] が作った PR には approve できない)。
+#
+# test はアプリごとに差し替えられる:
+#   - test-command: 単一コマンド (既定)
+#   - test-jobs: JSON 配列で複数の test ジョブを定義する (name / command / setup / workingDirectory /
+#     runsOn / nodeVersion / installFilter / timeoutMinutes)。matrix で並列に走り、どれか 1 つでも
+#     落ちれば test ジョブは failure になる。
+#   - run-test: false + gate: false: 呼び出し側で自由に test ジョブを書き、ci-gate.yml に
+#     全ジョブの結果を渡して CI Gate と finalize を呼び出し側に置く (services / container が
+#     要るときなど)。
+#
+# ruleset の必須チェックには "<呼び出し側 job 名> / CI Gate" だけを登録する。
+
 on:
   workflow_call:
     inputs:
@@ -13,14 +44,128 @@ on:
         type: string
         default: "pnpm typecheck"
       test-command:
+        description: test-jobs を指定しないときに使う単一の test コマンド
         type: string
         default: "pnpm test"
+      test-jobs:
+        description: |
+          test ジョブの定義 (JSON 配列)。指定すると test-command は使わない。
+          各要素: {"name": "unit", "command": "pnpm test", "setup": "...", "workingDirectory": ".",
+                   "runsOn": "ubuntu-latest", "nodeVersion": "24", "installFilter": "", "timeoutMinutes": 30}
+          name と command 以外は省略可。
+        type: string
+        default: ""
       run-test:
         type: boolean
         default: true
+      gate:
+        description: |
+          この workflow 内で CI Gate と finalize を走らせるか。呼び出し側に独自の test ジョブがあり
+          ci-gate.yml で集約するときは false にする。
+        type: boolean
+        default: true
+      run-review:
+        description: Claude Code によるコードレビューと approve / request-changes の提出を行うか
+        type: boolean
+        default: false
+      review-model:
+        description: レビューに使うモデル (claude_args の --model)
+        type: string
+        default: "opus"
+      review-max-turns:
+        description: レビューの最大ターン数 (--max-turns)
+        type: string
+        default: "80"
+      review-allowed-bots:
+        description: bot が作った PR でもレビューを走らせる bot 名 (カンマ区切り。'*' で全て)
+        type: string
+        default: "*"
+      review-instructions:
+        description: レビュー指示に追記する文 (リポジトリ固有の観点や弱点など)
+        type: string
+        default: ""
+      review-exclude-patterns:
+        description: レビュー対象から追加で除外するパスの glob (改行区切り)
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      REVIEWER_GH_APP_ID:
+        required: false
+      REVIEWER_GH_APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      # gate: false のとき、呼び出し側の ci-gate.yml に渡す。
+      conflicted:
+        description: PR がコンフリクトしていれば 'true'
+        value: ${{ jobs.changes.outputs.conflicted }}
+      review-comments:
+        description: Code Review の構造化出力 ({"comments":[...]})
+        value: ${{ jobs.review.outputs.comments }}
+      review-result:
+        description: Run Code Review ステップの outcome
+        value: ${{ jobs.review.outputs.result }}
 
 jobs:
+  # ============================================================================
+  # 前処理: 緊急避難口の判定とコンフリクト判定
+  # ============================================================================
+  # hotfix / revert ラベル付き PR と revert- ブランチは通常 CI を走らせない (緊急避難口)。
+  # ここがスキップされると下流の lint / test / review は連鎖スキップされる。
+  # CI Gate は always() で走り、同じ条件を見て素通しの success を出す。
+  changes:
+    if: >-
+      github.event_name != 'pull_request'
+      || (!contains(github.event.pull_request.labels.*.name, 'hotfix')
+        && !contains(github.event.pull_request.labels.*.name, 'revert')
+        && !startsWith(github.head_ref, 'revert-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      conflicted: ${{ steps.conflict.outputs.conflicted || 'false' }}
+      test-jobs: ${{ steps.test-jobs.outputs.json }}
+    steps:
+      # test ジョブの matrix を決める。test-jobs が空なら test-command 1 本の matrix にする。
+      - name: Resolve test jobs
+        id: test-jobs
+        env:
+          TEST_JOBS: ${{ inputs.test-jobs }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          if [ -n "$TEST_JOBS" ]; then
+            json=$(jq -ec '
+              if type != "array" or length == 0 then error("test-jobs must be a non-empty JSON array") else . end
+              | map(if (.name | type) != "string" or .name == "" or (.command | type) != "string" or .command == ""
+                    then error("each test-jobs item needs string name and command") else . end)
+            ' <<<"$TEST_JOBS")
+          else
+            json=$(jq -nc --arg c "$TEST_COMMAND" '[{name: "test", command: $c}]')
+          fi
+          echo "json=${json}" >> "$GITHUB_OUTPUT"
+          echo "test jobs: ${json}"
+
+      # PR がベースとマージコンフリクトしている (mergeable_state=dirty) 場合は、どうせ
+      # マージできないので Lint / Test / Review を一切走らせずコストを削減する。
+      # コンフリクト解消で synchronize イベントが飛び、CI は再実行されて必須チェックが通る。
+      - name: Check PR conflict
+        id: conflict
+        if: github.event_name == 'pull_request'
+        uses: omni-stove/.github/actions/check-pr-conflict@main
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+
+  # ============================================================================
+  # Lint / Test
+  # ============================================================================
   lint:
+    needs: changes
+    if: needs.changes.outputs.conflicted != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -36,16 +181,262 @@ jobs:
       - name: Type check
         run: ${{ inputs.typecheck-command }}
 
+  # test-jobs (または test-command 1 本) を matrix で並列に走らせる。fail-fast しないのは、
+  # 1 つが落ちても残りの結果を出し切って auto-fix / レビューの材料にするため。
+  # どれか 1 つでも failure なら test ジョブ全体が failure になり CI Gate が止める。
   test:
-    if: ${{ inputs.run-test }}
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.name }})
+    needs: changes
+    if: inputs.run-test && needs.changes.outputs.conflicted != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.test-jobs) }}
+    runs-on: ${{ matrix.runsOn || 'ubuntu-latest' }}
+    timeout-minutes: ${{ matrix.timeoutMinutes || 30 }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Setup pnpm & Node.js
         uses: omni-stove/.github/actions/setup-pnpm-node@main
         with:
-          node-version: ${{ inputs.node-version }}
+          node-version: ${{ matrix.nodeVersion || inputs.node-version }}
+          install-filter: ${{ matrix.installFilter || '' }}
+
+      - name: Setup
+        if: matrix.setup
+        working-directory: ${{ matrix.workingDirectory || '.' }}
+        run: ${{ matrix.setup }}
 
       - name: Test
-        run: ${{ inputs.test-command }}
+        working-directory: ${{ matrix.workingDirectory || '.' }}
+        run: ${{ matrix.command }}
+
+  # ============================================================================
+  # Code Review (指摘を出してインラインコメントとして投稿するだけ。提出は finalize)
+  # ============================================================================
+  review:
+    name: Code Review
+    needs: changes
+    if: >-
+      inputs.run-review
+      && github.event_name == 'pull_request'
+      && needs.changes.outputs.conflicted != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      # secrets は if で参照できないため env に落としてから step の if で見る。
+      HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
+    outputs:
+      # finalize が参照する。review ステップがスキップ / 失敗したときは comments が空になる。
+      comments: ${{ steps.review.outputs.structured_output }}
+      result: ${{ steps.review.outcome }}
+    steps:
+      # マージコミット (Update Branch) 時はスキップ。レビュー対象の変更が無いため。
+      - name: Check if merge commit
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event.action }}" = "opened" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PARENTS=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}" --jq '.parents | length')
+          if [ "$PARENTS" -gt 1 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          # レビューは diff を gh pr diff で取得し、Read は head の作業ツリーしか見ない。
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # 差分取得は決定的な処理なので LLM に叩かせず step で済ませ、後続プロンプトへ直接埋め込む。
+      - name: Fetch PR diff
+        id: diff
+        if: steps.check.outputs.skip != 'true'
+        uses: omni-stove/.github/actions/fetch-review-diff@main
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          exclude-patterns: ${{ inputs.review-exclude-patterns }}
+
+      # 指摘は json-schema で {"comments":[{path,line,category,body}]} に強制する。
+      # 既存実装との整合性判定で作業ツリーの読み取りが要るため、書き込み系ツールだけ禁止する。
+      # diff が除外フィルタの結果 empty=true なら、中身のない diff をエージェントに渡さずスキップする。
+      - name: Run Code Review
+        id: review
+        if: steps.check.outputs.skip != 'true' && steps.diff.outputs.empty != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          allowed_bots: ${{ inputs.review-allowed-bots }}
+          show_full_output: false
+          claude_args: |
+            --model ${{ inputs.review-model }}
+            --max-turns ${{ inputs.review-max-turns }}
+            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent,TodoWrite"
+            --append-system-prompt "Always output in Japanese."
+            --json-schema '{"type":"object","properties":{"comments":{"type":"array","description":"修正必須の指摘。","items":{"type":"object","properties":{"path":{"type":"string","description":"変更行を含むファイル。"},"line":{"type":"integer","description":"対象の追加行。"},"category":{"type":"string","enum":["security","correctness","performance","consistency"],"description":"主因。複数なら影響が最大のもの。"},"body":{"type":"string","description":"指摘。security は該当する OWASP Top 10 / CWE 項目で始める。特定できない番号は書かない。"}},"required":["path","line","category","body"],"additionalProperties":false}}},"required":["comments"],"additionalProperties":false}'
+          prompt: |
+            <pr_description>
+            ${{ steps.diff.outputs.pr_description }}
+            </pr_description>
+
+            <pr_linked_issues>
+            ${{ steps.diff.outputs.pr_linked_issues }}
+            </pr_linked_issues>
+
+            <pr_commits>
+            ${{ steps.diff.outputs.pr_commits }}
+            </pr_commits>
+
+            <pr_comments>
+            ${{ steps.diff.outputs.pr_comments }}
+            </pr_comments>
+
+            <pr_review_threads>
+            ${{ steps.diff.outputs.pr_review_threads }}
+            </pr_review_threads>
+
+            <pr_diff>
+            ${{ steps.diff.outputs.diff }}
+            </pr_diff>
+
+            Find security, correctness, performance, and repository-consistency
+            defects in `pr_diff` that must be fixed.
+
+            Check the OWASP Top 10 categories and CWE where applicable. Derive trust
+            boundaries and deployment assumptions from the repository. Keep a
+            security finding only when a feasible attacker input has a concrete effect.
+
+            Keep a correctness or performance finding only when a concrete input or
+            state causes a wrong result, failure, or material resource cost.
+
+            Inspect surrounding code and sibling modules. Keep an inconsistency only
+            when an existing file establishes the pattern.
+
+            ${{ inputs.review-instructions }}
+
+            Do not treat missing features or incomplete work as defects.
+
+            Cite the repository file stating any external constraint a finding rests
+            on. Drop findings hedged as "likely" or "possibly", and findings resolved
+            only by the author's intent. Report a value as a typo only when the
+            repository shows what consumes it and how it fails.
+
+            Before judging the diff, read `pr_description`, `pr_linked_issues`,
+            `pr_commits`, `pr_comments`, and `pr_review_threads` and work out what
+            this PR is meant to achieve and what it leaves out of scope. When a block
+            says its content is saved in a file, read that file in full first. Judge
+            each change against that purpose.
+
+            Do not raise what the author has already addressed or intentionally
+            decided not to fix in those blocks, including in resolved review threads.
+            A resolved thread alone is not proof of a fix: raise the finding again
+            only when the defect is still in the code and nobody in the thread
+            explained why it is acceptable.
+
+      # インラインコメントは review ジョブの責務。最終 approve / request-changes は
+      # lint / test の結果も要るので finalize に残す。コメントを投稿する bot と
+      # approve する bot を揃えるため、同じ reviewer App token で投稿する。
+      - name: Generate reviewer App token
+        id: reviewer-token
+        if: always() && steps.check.outputs.skip != 'true' && env.HAS_REVIEWER_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
+
+      # review が失敗しても走らせる (指摘 0 件扱いで古いフォールバックコメントの扱いを決める)。
+      # 投稿に失敗したらこの job が failure になり CI Gate が止める
+      # (レビューコメントが PR に反映されるより先に CI Gate を通過させない)。
+      - name: Post review comments
+        if: always() && steps.check.outputs.skip != 'true'
+        uses: omni-stove/.github/actions/post-review-comments@main
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          commit: ${{ github.event.pull_request.head.sha }}
+          comments-json: ${{ steps.review.outputs.structured_output }}
+          review-result: ${{ steps.review.outcome }}
+          github-token: ${{ steps.reviewer-token.outputs.token || github.token }}
+          reviewer-login: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}
+
+  # ============================================================================
+  # CI Gate (lint / test / review を集約する単一の必須チェック)
+  # ============================================================================
+  # always() で必ず走り、needs のどれかが failure / cancelled なら失敗する (skipped は失敗ではない)。
+  # hotfix / revert の緊急避難口はアクション側で判定して素通しの success にする。
+  ci-gate:
+    name: CI Gate
+    needs: [changes, lint, test, review]
+    if: always() && inputs.gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Gate on job results
+        uses: omni-stove/.github/actions/ci-gate@main
+        with:
+          results: |
+            changes=${{ needs.changes.result }}
+            lint=${{ needs.lint.result }}
+            test=${{ needs.test.result }}
+            review=${{ needs.review.result }}
+
+  # ============================================================================
+  # レビュー確定 (lint / test / review の結果を統合して approve / request-changes を提出)
+  # ============================================================================
+  # !cancelled() で lint / test / review のいずれかが失敗しても必ず走り切らせる (fail-fast させない)。
+  # always() にしないのは、concurrency の cancel-in-progress で run がキャンセルされた場合まで
+  # 走ってしまうため (全 needs が cancelled → 失敗なし・指摘 0 件と誤読して approve してしまう)。
+  # 緊急避難口 / コンフリクトで changes が成功していない run では提出しない。
+  finalize:
+    needs: [changes, lint, test, review]
+    if: >-
+      !cancelled()
+      && inputs.gate
+      && inputs.run-review
+      && github.event_name == 'pull_request'
+      && needs.changes.result == 'success'
+      && needs.changes.outputs.conflicted != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
+    steps:
+      # レビュー提出 (gh pr review) は PR 作成者と同じ identity では approve できないため、
+      # reviewer 専用 App のトークンで提出する。
+      - name: Generate reviewer App token
+        id: reviewer-token
+        if: env.HAS_REVIEWER_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_GH_APP_PRIVATE_KEY }}
+
+      - name: Finalize review
+        uses: omni-stove/.github/actions/finalize-review@main
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          lint-test-results: ${{ needs.lint.result }} ${{ needs.test.result }}
+          comments-json: ${{ needs.review.outputs.comments }}
+          review-result: ${{ needs.review.outputs.result }}
+          github-token: ${{ steps.reviewer-token.outputs.token || github.token }}
+          reviewer-login: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}

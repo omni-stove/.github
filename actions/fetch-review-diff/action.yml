@@ -1,0 +1,69 @@
+name: Fetch Review Diff
+description: |
+  Code Review に渡す PR の diff と文脈 (説明 / 参照 Issue / コミット / コメント / レビュースレッド) を取得する。
+  レビューの意味が薄いファイル (ドキュメント / 自動生成物 / スナップショット / lockfile 等) は決定論的に除外する。
+  プロンプトの上限 (execve の MAX_ARG_STRLEN = 128KiB) に収まらない分は切り詰めず作業ツリー内に書き出し、
+  エージェントに Read させる。
+
+inputs:
+  pr-number:
+    description: PR 番号
+    required: true
+  repo:
+    description: owner/name (既定は現在のリポジトリ)
+    required: false
+    default: ${{ github.repository }}
+  github-token:
+    description: GitHub API トークン (既定は github.token)
+    required: false
+    default: ${{ github.token }}
+  exclude-patterns:
+    description: 追加で除外するパスの glob (改行区切り。bash の case パターンとしてパス全体に当てる)
+    required: false
+    default: ""
+  max-bytes:
+    description: インラインに載せる diff の最大バイト数 (空ならプロンプト予算から自動算出)
+    required: false
+    default: ""
+  max-body-bytes:
+    description: 文脈 5 種それぞれをインラインに載せる最大バイト数
+    required: false
+    default: "8000"
+
+outputs:
+  diff:
+    description: 除外後の diff (上限を超えた分はファイル一覧と Read の指示に置き換わる)
+    value: ${{ steps.fetch.outputs.diff }}
+  empty:
+    description: 除外後にレビュー対象ファイルが 1 つも残らなければ 'true'
+    value: ${{ steps.fetch.outputs.empty }}
+  pr_description:
+    description: PR のタイトルと本文
+    value: ${{ steps.fetch.outputs.pr_description }}
+  pr_linked_issues:
+    description: PR が参照する同リポジトリの Issue / PR のタイトルと本文
+    value: ${{ steps.fetch.outputs.pr_linked_issues }}
+  pr_commits:
+    description: PR のコミットメッセージ (マージコミットを除く)
+    value: ${{ steps.fetch.outputs.pr_commits }}
+  pr_comments:
+    description: 会話タブのコメント
+    value: ${{ steps.fetch.outputs.pr_comments }}
+  pr_review_threads:
+    description: レビュースレッド (resolved / unresolved の状態付き)
+    value: ${{ steps.fetch.outputs.pr_review_threads }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch PR diff and context
+      id: fetch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        PR: ${{ inputs.pr-number }}
+        EXCLUDE_PATTERNS: ${{ inputs.exclude-patterns }}
+        MAX_BYTES: ${{ inputs.max-bytes }}
+        MAX_BODY_BYTES: ${{ inputs.max-body-bytes }}
+      run: bash "$GITHUB_ACTION_PATH/fetch-review-diff.sh"

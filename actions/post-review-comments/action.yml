@@ -1,0 +1,55 @@
+name: Post Review Comments
+description: |
+  Code Review の構造化出力 ({"comments":[{path,line,body,...}]}) をインラインコメント付きの
+  review (event=COMMENT) として PR に投稿する。
+  既存のインラインコメントと重複する指摘は除外し、行が diff に乗らず 422 になる指摘は
+  ファイル単位コメント → 通常コメント (1 件にまとめ、べき等に更新) の順でフォールバックする。
+  レビューが正常終了して失敗した指摘が無ければ、古いフォールバックコメントを削除する。
+
+inputs:
+  pr-number:
+    description: PR 番号
+    required: true
+  commit:
+    description: インラインコメントを紐づけるコミット SHA
+    required: true
+  comments-json:
+    description: 構造化出力 ({"comments":[...]})。レビュー未実施 / 失敗時は空でよい
+    required: false
+    default: ""
+  review-result:
+    description: Run Code Review ステップの outcome (success / failure / skipped / cancelled)
+    required: false
+    default: ""
+  github-token:
+    description: 投稿に使うトークン (reviewer App の token を推奨。既定は github.token)
+    required: false
+    default: ${{ github.token }}
+  reviewer-login:
+    description: github-token の identity (`<app-slug>[bot]`)。フォールバックコメントの検索対象を絞る
+    required: false
+    default: "github-actions[bot]"
+  repo:
+    description: owner/name (既定は現在のリポジトリ)
+    required: false
+    default: ${{ github.repository }}
+  parallelism:
+    description: 422 後の指摘単位の並列再試行数
+    required: false
+    default: "6"
+
+runs:
+  using: composite
+  steps:
+    - name: Post review comments
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        PR: ${{ inputs.pr-number }}
+        COMMIT: ${{ inputs.commit }}
+        COMMENTS_JSON: ${{ inputs.comments-json }}
+        REVIEW_RESULT: ${{ inputs.review-result }}
+        REVIEWER_LOGIN: ${{ inputs.reviewer-login }}
+        PARALLELISM: ${{ inputs.parallelism }}
+      run: bash "$GITHUB_ACTION_PATH/post-review-comments.sh"

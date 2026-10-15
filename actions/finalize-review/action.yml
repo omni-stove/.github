@@ -1,0 +1,71 @@
+name: Finalize Review
+description: |
+  lint / test の結果と Code Review の指摘件数を統合し、PR レビューを決定論的に確定する
+  (approve / request-changes を提出する)。
+    - lint / test に 1 つでも failure があれば request-changes (テストが落ちている PR を approve しない)
+    - failure が無ければ指摘件数で決める: 1 件でもあれば request-changes、0 件なら approve
+  提出前に、同じ reviewer が過去に出した CHANGES_REQUESTED を dismiss し、常に最新の判定だけが残るようにする。
+
+  approve を出すトークンは PR 作成者とは別の identity (reviewer 用 GitHub App) を推奨する。
+  PR 作成者と同じ App / github-actions[bot] が作った PR には approve できない (GitHub の仕様)。
+
+inputs:
+  pr-number:
+    description: PR 番号
+    required: true
+  lint-test-results:
+    description: lint / test ジョブの result を空白区切りで列挙したもの (success / failure / skipped / cancelled)
+    required: false
+    default: ""
+  comments-json:
+    description: Code Review の構造化出力 ({"comments":[...]})。指摘件数 (.comments の length) が判定の真実
+    required: false
+    default: ""
+  review-result:
+    description: Run Code Review ステップの outcome (success / failure / skipped / cancelled)。success 以外なら実施済みの文言を添えない
+    required: false
+    default: ""
+  github-token:
+    description: レビュー提出に使うトークン (reviewer App の token を推奨。既定は github.token)
+    required: false
+    default: ${{ github.token }}
+  reviewer-login:
+    description: github-token の identity (`<app-slug>[bot]`)。dismiss 対象を自分のレビューに絞る
+    required: false
+    default: "github-actions[bot]"
+  bypass-labels:
+    description: request-changes 本文に添える緊急避難口の案内に使うラベル (カンマ区切り。空なら案内しない)
+    required: false
+    default: "hotfix,revert"
+  repo:
+    description: owner/name (既定は現在のリポジトリ)
+    required: false
+    default: ${{ github.repository }}
+
+outputs:
+  decision:
+    description: 提出したレビュー判定 (approve / request-changes)
+    value: ${{ steps.finalize.outputs.decision }}
+  review-comment-count:
+    description: Code Review の指摘件数
+    value: ${{ steps.finalize.outputs.review_comment_count }}
+  lint-test-failed:
+    description: lint / test に failure があれば 'true'
+    value: ${{ steps.finalize.outputs.lint_test_failed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Finalize review
+      id: finalize
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        LINT_TEST_RESULTS: ${{ inputs.lint-test-results }}
+        COMMENTS_JSON: ${{ inputs.comments-json }}
+        REVIEW_RESULT: ${{ inputs.review-result }}
+        REVIEWER_LOGIN: ${{ inputs.reviewer-login }}
+        BYPASS_LABELS: ${{ inputs.bypass-labels }}
+      run: bash "$GITHUB_ACTION_PATH/finalize-review.sh"
