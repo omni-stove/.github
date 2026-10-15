@@ -1,0 +1,59 @@
+name: Agent Regen
+description: |
+  エージェントの編集に合わせて lockfile と生成物を作り直す。エージェント実行後、commit / push の
+  前に同じジョブで呼ぶ。エージェントは依存を install しないため、package.json や生成元を変えても
+  lockfile と生成物が追従せず CI の lint で落ちる。作り直しが要らなければ Node.js のセットアップごと省く。
+  作り直しのコマンドはリポジトリごとに違うので command で受け取り、空なら何もしない。
+  判定のロジックとテストは decide.sh / decide.bats を参照。
+
+inputs:
+  structured:
+    description: エージェントの structured_output (JSON 文字列)。needs_regen を見る
+    required: false
+    default: ""
+  command:
+    description: 作り直しのコマンド (例 "pnpm install --lockfile-only --no-frozen-lockfile")。空なら何もしない
+    required: false
+    default: ""
+  node-version:
+    description: Node.js のバージョン
+    required: false
+    default: "24"
+
+outputs:
+  needs-regen:
+    description: 作り直しが要ると判定したら 'true'
+    value: ${{ steps.decide.outputs.needs_regen }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide whether to regenerate
+      id: decide
+      if: inputs.command != ''
+      shell: bash
+      env:
+        STRUCTURED: ${{ inputs.structured }}
+      run: bash "$GITHUB_ACTION_PATH/decide.sh"
+
+    - name: Setup pnpm
+      if: steps.decide.outputs.needs_regen == 'true'
+      uses: pnpm/action-setup@v4
+
+    - name: Setup Node.js
+      if: steps.decide.outputs.needs_regen == 'true'
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Regenerate
+      if: steps.decide.outputs.needs_regen == 'true'
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+      # 作り直しは lifecycle script 等でリポジトリのコードを実行するので、後続ステップの PATH や
+      # 環境変数を書き換えて App token を奪えないよう runner のファイルコマンドの書き込み先を潰す。
+      run: |
+        env GITHUB_PATH=/dev/null GITHUB_ENV=/dev/null GITHUB_OUTPUT=/dev/null \
+          GITHUB_STATE=/dev/null GITHUB_STEP_SUMMARY=/dev/null \
+          bash -euo pipefail -c "$COMMAND"

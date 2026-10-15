@@ -1,0 +1,74 @@
+name: Create Issue PR
+description: |
+  Issue Worker のエージェントが作業ツリーに残した編集を 1 コミットにまとめ、ブランチへ push して
+  PR を作る。PR の文面はエージェントの構造化出力 (message / title / purpose / approach /
+  verification / review_points / closes_issue) から取り、変更が無ければ PR を作らず Issue に
+  理由をコメントする。ロジックとテストは create-issue-pr.sh / create-pr.sh と各 .bats を参照。
+
+inputs:
+  structured:
+    description: エージェントの structured_output (JSON 文字列)
+    required: false
+    default: ""
+  branch:
+    description: PR の head ブランチ名
+    required: true
+  base:
+    description: PR の base ブランチ名
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+  issue-number:
+    description: 対象 Issue 番号。Closes / refs で PR から参照する
+    required: false
+    default: ""
+  labels:
+    description: PR に付けるラベル (スペース区切り)
+    required: false
+    default: ""
+  draft:
+    description: "'true' なら draft PR にする"
+    required: false
+    default: "false"
+  start-sha:
+    description: エージェント実行前の HEAD。エージェントが commit してしまった変更も PR に含める
+    required: false
+    default: ""
+  github-token:
+    description: push と PR 作成に使うトークン。github.token で作った PR では pull_request の workflow が起動しない
+    required: false
+    default: ${{ github.token }}
+  git-user-name:
+    description: コミットの author 名 (git identity が未設定のとき)
+    required: false
+    default: "github-actions[bot]"
+  git-user-email:
+    description: コミットの author メールアドレス (git identity が未設定のとき)
+    required: false
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+
+outputs:
+  pr-url:
+    description: 作成 (または更新) した PR の URL。PR を作らなかったときは空
+    value: ${{ steps.create.outputs.pr_url }}
+  pr-number:
+    description: PR 番号。PR を作らなかったときは空
+    value: ${{ steps.create.outputs.pr_number }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create PR from the working tree
+      id: create
+      shell: bash
+      env:
+        STRUCTURED: ${{ inputs.structured }}
+        BRANCH: ${{ inputs.branch }}
+        BASE: ${{ inputs.base }}
+        ISSUE: ${{ inputs.issue-number }}
+        LABELS: ${{ inputs.labels }}
+        DRAFT: ${{ inputs.draft }}
+        START_SHA: ${{ inputs.start-sha }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
+      run: bash "$GITHUB_ACTION_PATH/create-issue-pr.sh"

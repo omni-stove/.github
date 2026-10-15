@@ -22,5 +22,5 @@ run = [
 ]
 
 [test]
-description = "Run the bats tests (install.bats and actions/agent-run)"
-run = "bats install.bats actions/agent-run"
+description = "Run the bats tests (install.bats and the actions' *.bats)"
+run = "bats install.bats actions/agent-run actions/agent-regen actions/create-issue-pr actions/resolve-issue"

@@ -1,0 +1,250 @@
+name: Issue Worker
+
+# Issue にラベルが付いたらコーディングエージェントが着手し、編集を PR にする reusable workflow。
+#   bug            → 修正 PR                    (agent-fix/issue-<n>)
+#   security       → 指摘箇所だけ直す修正 PR    (agent-security-fix/issue-<n>、security ラベル)
+#   prototype      → モックで良い試作の draft PR (agent-proto/issue-<n>、prototype ラベル)
+#   implementation → 本実装 PR                  (agent-implement/issue-<n>)
+# 発火は labeled 一本に統一する。GitHub はラベル付きで作成された Issue に対しても opened と
+# labeled を別々に送るため、opened でもラベルを見ると同じ Issue に job が二重に走り、同名
+# ブランチへの push が衝突する。ラベル付与が着手の合図なので、Issue を書けるだけの人は起動できない。
+#
+# エージェントは編集だけを担当し (依存の install・テスト・lint・commit・push はしない)、
+# ブランチ・ラベル・draft・PR 文面の整形は決定論的に step で確定する (actions/resolve-issue /
+# actions/create-issue-pr)。PR の文面はエージェントの構造化出力から取る。
+#
+# 呼び出し側:
+#   on:
+#     issues:
+#       types: [labeled]
+#   jobs:
+#     work:
+#       uses: omni-stove/.github/.github/workflows/issue-worker.yml@main
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#         issues: write
+#         id-token: write
+#       secrets: inherit
+#
+# PR を作るトークンに AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY (reviewer とは別の App) を
+# 渡すと、作った PR の pull_request イベントで CI が起動する (github.token で作った PR では起動しない)。
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: 対象 Issue 番号 (空なら github.event.issue.number)
+        type: string
+        default: ""
+      label:
+        description: 今回付いたラベル名 (空なら github.event.label.name)
+        type: string
+        default: ""
+      provider:
+        description: 実行する provider (claude | codex)
+        type: string
+        default: "claude"
+      tier:
+        description: モデルの tier (max | high | medium | low)
+        type: string
+        default: "high"
+      model:
+        description: モデルを直接指定する (空なら tier から解決する)
+        type: string
+        default: ""
+      effort:
+        description: 推論 effort (low | medium | high | xhigh | max)。空なら provider の既定値
+        type: string
+        default: ""
+      allowed-tools:
+        description: エージェントに許可するツール (Claude 形式、カンマ区切り)
+        type: string
+        default: "Read,Edit,Write,NotebookEdit,Glob,Grep,Bash(pnpm:*),Bash(npm:*),Bash(make:*),Bash(git:*),Bash(gh:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(rg:*),Bash(node:*),Bash(npx:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(rm:*)"
+      allowed-bots:
+        description: bot が付けたラベルでも起動する bot 名 (カンマ区切り)。公開リポジトリでは bot 名を列挙するか "" にする
+        type: string
+        default: "*"
+      system-prompt:
+        description: 追記するシステムプロンプト
+        type: string
+        default: "Always output in Japanese. No dependencies are installed; do not install them or run tests or lint. Leave lockfiles and generated files to their generators."
+      instructions:
+        description: タスク指示に追記する文 (リポジトリ固有の規約や注意点)
+        type: string
+        default: ""
+      scope-label-prefix:
+        description: 編集スコープを表すラベルの接頭辞。空なら無効
+        type: string
+        default: "App:"
+      scope-dir:
+        description: スコープのディレクトリ。ラベル App:web と "apps" で apps/web になる
+        type: string
+        default: "apps"
+      base-branch:
+        description: PR の base ブランチ (空ならリポジトリの既定ブランチ)
+        type: string
+        default: ""
+      regen-command:
+        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。空なら作り直さない
+        type: string
+        default: ""
+      node-version:
+        description: regen-command を動かす Node.js のバージョン
+        type: string
+        default: "24"
+      timeout-minutes:
+        description: エージェントを含むジョブのタイムアウト (分)
+        type: number
+        default: 60
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      AGENT_GH_APP_ID:
+        required: false
+      AGENT_GH_APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      mode:
+        description: 実行したモード (fix | security-fix | proto | implement)。走らせなかったら空
+        value: ${{ jobs.resolve.outputs.mode }}
+      pr-url:
+        description: 作成した PR の URL。作らなかったら空
+        value: ${{ jobs.work.outputs.pr-url }}
+
+jobs:
+  # 走らせるかどうかと決定論で決まる値を先に確定し、走らせないラベルでは checkout すらしない。
+  resolve:
+    name: Resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+      branch: ${{ steps.resolve.outputs.branch }}
+      draft: ${{ steps.resolve.outputs.draft }}
+      pr-labels: ${{ steps.resolve.outputs.pr-labels }}
+      scope-label: ${{ steps.resolve.outputs.scope-label }}
+      task: ${{ steps.resolve.outputs.task }}
+      number: ${{ inputs.issue-number || github.event.issue.number }}
+    steps:
+      - uses: omni-stove/.github/actions/resolve-issue@main
+        id: resolve
+        with:
+          issue-number: ${{ inputs.issue-number || github.event.issue.number }}
+          label: ${{ inputs.label || github.event.label.name }}
+          scope-label-prefix: ${{ inputs.scope-label-prefix }}
+          scope-dir: ${{ inputs.scope-dir }}
+
+      - name: Report
+        env:
+          MODE: ${{ steps.resolve.outputs.mode }}
+          REASON: ${{ steps.resolve.outputs.skip-reason }}
+        run: |
+          if [ -n "$MODE" ]; then
+            echo "mode: $MODE"
+          else
+            echo "::notice::skipped: $REASON"
+          fi
+
+  work:
+    name: ${{ needs.resolve.outputs.mode }}
+    needs: resolve
+    if: needs.resolve.outputs.mode != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: issue-worker-${{ needs.resolve.outputs.branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      # secrets は if で参照できないため env に落としてから step の if で見る。
+      HAS_AGENT_APP: ${{ secrets.AGENT_GH_APP_ID != '' && secrets.AGENT_GH_APP_PRIVATE_KEY != '' }}
+    outputs:
+      pr-url: ${{ steps.pr.outputs.pr-url }}
+    steps:
+      - name: Generate agent App token
+        id: app
+        if: env.HAS_AGENT_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.AGENT_GH_APP_ID }}
+          private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          # エージェントが git log で経緯を辿れるように全履歴を取る。
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token || github.token }}
+
+      - name: Record the starting commit
+        id: start
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # commit / push / PR 作成は後段の step が握るので、エージェントには編集だけさせる。
+      # 構造化出力は PR の文面になる。
+      - name: Run agent
+        id: agent
+        uses: omni-stove/.github/actions/agent-run@main
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          provider: ${{ inputs.provider }}
+          tier: ${{ inputs.tier }}
+          model: ${{ inputs.model }}
+          effort: ${{ inputs.effort }}
+          allowed-bots: ${{ inputs.allowed-bots }}
+          allowed-tools: ${{ inputs.allowed-tools }}
+          disallowed-tools: Skill
+          permission-profile: workspace-write
+          settings: |
+            {
+              "permissions": {
+                "deny": ["Bash(git commit:*)", "Bash(git push:*)", "Bash(gh pr create:*)", "Bash(gh pr merge:*)"]
+              }
+            }
+          system-prompt: ${{ inputs.system-prompt }}
+          json-schema: '{"type":"object","description":"常体（だ・である）で、したことだけを書く。","required":["message","title","purpose","approach","verification","review_points","closes_issue","needs_regen"],"additionalProperties":false,"properties":{"needs_regen":{"type":"boolean","description":"package.json の依存か、生成物の生成元を変更したなら true。"},"message":{"type":"string","description":"コードを変更しなかった理由。変更したなら空文字。"},"title":{"type":"string","description":"変更内容を「〜する」で終える形で書く。`fix(...)`・`[App]` などの接頭辞は付けない。"},"purpose":{"type":"string","description":"何を・なぜ変えるかを書く。Closes / refs 行は書かない。"},"approach":{"type":"string","description":"どう変えたか・既存のどのやり方に倣ったかを書く。変更ファイルの列挙や差分の逐語説明はしない。"},"verification":{"type":"string","description":"アプリケーションを手で操作して変更後の挙動を確かめる手順（どの画面で何をすると何が見えるか）を書く。手で確かめられる挙動の変化が無ければ空文字。"},"review_points":{"type":"string","description":"レビュアーに判断してほしいトレードオフ・リスクと、あえてしなかったこと（残作業を含む）を書く。無ければ空文字。"},"closes_issue":{"type":"boolean","description":"この変更で Issue の要求がすべて満たされるなら true。一部だけなら false。"}}}'
+          prompt: |
+            ${{ needs.resolve.outputs.task }}
+
+            ${{ inputs.instructions }}
+
+            Stop after editing — do not commit, push, or open a PR.
+
+      # 失敗しても PR は作る (不整合は CI が落として知らせる)。
+      - name: Regenerate lockfile and generated outputs
+        continue-on-error: true
+        uses: omni-stove/.github/actions/agent-regen@main
+        with:
+          structured: ${{ steps.agent.outputs.structured-output }}
+          command: ${{ inputs.regen-command }}
+          node-version: ${{ inputs.node-version }}
+
+      - name: Create PR
+        id: pr
+        uses: omni-stove/.github/actions/create-issue-pr@main
+        with:
+          structured: ${{ steps.agent.outputs.structured-output }}
+          branch: ${{ needs.resolve.outputs.branch }}
+          base: ${{ inputs.base-branch || github.event.repository.default_branch }}
+          issue-number: ${{ needs.resolve.outputs.number }}
+          labels: ${{ needs.resolve.outputs.pr-labels }} ${{ needs.resolve.outputs.scope-label }}
+          draft: ${{ needs.resolve.outputs.draft }}
+          start-sha: ${{ steps.start.outputs.sha }}
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          git-user-name: ${{ steps.app.outputs.bot-login || 'github-actions[bot]' }}
+          git-user-email: ${{ steps.app.outputs.bot-login && format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) || '41898282+github-actions[bot]@users.noreply.github.com' }}

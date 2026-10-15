@@ -1,0 +1,74 @@
+name: Resolve Issue
+description: |
+  Issue Worker の起点となる Issue を読み、付いたラベルから実行モードと決定論で決まる値
+  (ブランチ名・draft・PR ラベル・編集スコープ・エージェントへのタスク文) を返す。
+  ロジックとテストは resolve-issue.sh / resolve-issue.bats を参照。
+
+inputs:
+  issue-number:
+    description: 対象 Issue 番号
+    required: true
+  label:
+    description: 今回付いたラベル名 (bug | security | prototype | implementation。それ以外は mode が空になる)
+    required: true
+  scope-label-prefix:
+    description: 編集スコープを表すラベルの接頭辞。空なら無効
+    required: false
+    default: "App:"
+  scope-dir:
+    description: スコープのディレクトリ。ラベル App:web と "apps" で apps/web になる
+    required: false
+    default: "apps"
+  github-token:
+    description: Issue を読むトークン
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  mode:
+    description: fix | security-fix | proto | implement。走らせないなら空
+    value: ${{ steps.resolve.outputs.mode }}
+  skip-reason:
+    description: mode が空のときの理由
+    value: ${{ steps.resolve.outputs.skip_reason }}
+  title:
+    description: Issue のタイトル
+    value: ${{ steps.resolve.outputs.title }}
+  body:
+    description: Issue の本文
+    value: ${{ steps.resolve.outputs.body }}
+  url:
+    description: Issue の URL
+    value: ${{ steps.resolve.outputs.url }}
+  branch:
+    description: PR の head ブランチ名 (agent-<mode>/issue-<n>)
+    value: ${{ steps.resolve.outputs.branch }}
+  draft:
+    description: PR を draft にするなら 'true'
+    value: ${{ steps.resolve.outputs.draft }}
+  pr-labels:
+    description: PR に付けるラベル (スペース区切り)
+    value: ${{ steps.resolve.outputs.pr_labels }}
+  scope-dir:
+    description: 編集スコープのディレクトリ。無ければ空
+    value: ${{ steps.resolve.outputs.scope_dir }}
+  scope-label:
+    description: 編集スコープのラベル名 (PR に引き継ぐ)。無ければ空
+    value: ${{ steps.resolve.outputs.scope_label }}
+  task:
+    description: エージェントに渡すタスク文 (Issue の本文とスコープ込み)
+    value: ${{ steps.resolve.outputs.task }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve issue
+      id: resolve
+      shell: bash
+      env:
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        LABEL: ${{ inputs.label }}
+        SCOPE_LABEL_PREFIX: ${{ inputs.scope-label-prefix }}
+        SCOPE_DIR: ${{ inputs.scope-dir }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/resolve-issue.sh"

@@ -7,6 +7,11 @@ Organization-wide GitHub Actions for omni-stove.
 利用側リポジトリのルートで 1 行。CI Gate の呼び出し workflow (`ci.yml` / `hotfix-revert-approve.yml`) を書き、
 `hotfix` / `revert` ラベルを作り、secrets の有無を確認して、残りの手作業を `todo` として並べる。
 
+2 回目以降は同じコマンドで更新になる。install.sh が作った workflow は最新のテンプレート (permissions や新しい input) に
+書き直され、`with:` の値 (手で直したコマンドや追加した input も) と `uses:` の参照は既存のものを引き継ぐ。
+オプションで指定したものだけが上書きされ、`echo "skip: ..."` / `run-test: false` は検出し直す
+(script を追加して再実行すれば本物のコマンドになる)。中身が同じなら `unchanged`、install.sh 以外が作ったファイルは `kept` で触らない。
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/omni-stove/.github/main/install.sh | bash -s -- --review --ruleset
 # private のときは gh 経由
@@ -17,10 +22,11 @@ gh api repos/omni-stove/.github/contents/install.sh -H 'Accept: application/vnd.
 | --- | --- |
 | `--review` | Code Review (`run-review: true`) を有効にする |
 | `--provider claude\|codex` | レビューの provider (既定: claude) |
-| `--auto-merge` | `auto-merge.yml` も入れる |
+| `--auto-merge` | `auto-merge.yml` も入れる (既にあれば指定しなくても更新する) |
+| `--issue-worker` | `issue-worker.yml` (Issue にラベルを付けるとエージェントが PR を作る) も入れ、`prototype` / `implementation` / `security` ラベルを作る (既にあれば指定しなくても更新する) |
 | `--ruleset` | 既定ブランチに `ci / CI Gate` を必須チェックにする ruleset "CI Gate" を作る (同名があれば更新。admin 権限が要る) |
-| `--ref <ref>` | `omni-stove/.github` の参照 (既定: `main`) |
-| `--force` | 既存の workflow ファイルを上書きする |
+| `--ref <ref>` | `omni-stove/.github` の参照 (既定: 既存 workflow の参照、無ければ `main`) |
+| `--force` | 既存の設定を引き継がず検出結果から書き直す。install.sh 以外が作ったファイルも上書きする |
 | `--no-labels` | ラベルを作らない |
 
 検出するもの: `mise.toml` (`node = "..."`) → Node.js バージョン、`package.json` の `lint` / `typecheck` / `test` script →
@@ -129,6 +135,31 @@ ci-gate:
 | `rate-limit-retry-max-wait-seconds` | Claude が GitHub API のレート制限で落ちたら解除まで待って 1 回再実行する |
 
 テストは `actions/agent-run/*.bats` (`bats actions/agent-run`)。
+
+### `resolve-issue` / `create-issue-pr` / `agent-regen`
+
+`issue-worker.yml` が使う部品。Issue 起点の自前ワークフローを組むときにも使える。
+
+| action | 役割 |
+| --- | --- |
+| `resolve-issue` | Issue を読み、付いたラベルからモード (fix / security-fix / proto / implement)・ブランチ名・draft・PR ラベル・編集スコープ (`App:<name>` ラベル → `apps/<name>`)・エージェントへのタスク文を決める。走らせないラベルや閉じた Issue では `mode` を空にする |
+| `create-issue-pr` | 作業ツリーの編集を 1 コミットにまとめて push し、構造化出力 `{message,title,purpose,approach,verification,review_points,closes_issue}` から PR を作る。変更が無ければ PR を作らず Issue に理由をコメントする。同じブランチの open PR があればそこへ push する |
+| `agent-regen` | エージェントが `package.json` 等を変えたか `needs_regen` を申告したときだけ、Node.js を用意して `command` (lockfile / 生成物の作り直し) を実行する |
+
+```yaml
+- uses: omni-stove/.github/actions/create-issue-pr@main
+  with:
+    structured: ${{ steps.agent.outputs.structured-output }}
+    branch: agent-fix/issue-${{ github.event.issue.number }}
+    issue-number: ${{ github.event.issue.number }}
+    labels: "prototype App:web"      # 無いラベルは警告して飛ばす
+    draft: "false"
+    start-sha: ${{ steps.start.outputs.sha }}   # エージェントが commit してしまった分も拾う
+    github-token: ${{ steps.app.outputs.token }}
+# steps.pr.outputs.pr-url / pr-number
+```
+
+テストは `actions/{resolve-issue,create-issue-pr,agent-regen}/*.bats`。
 
 ### `fetch-review-diff` / `post-review-comments` / `finalize-review`
 
@@ -330,6 +361,73 @@ jobs:
     secrets: inherit
 ```
 
+### `issue-worker.yml`
+
+Issue にラベルを付けるとコーディングエージェントが着手し、編集を PR にする。エージェントは編集と
+PR 文面 (構造化出力) だけを担当し、ブランチ・ラベル・draft・commit / push / PR 作成は step が決定論で行う。
+
+| ラベル | 動き | ブランチ |
+| --- | --- | --- |
+| `bug` | 修正 PR。直すものが無ければコードを変えず理由を Issue にコメントする | `agent-fix/issue-<n>` |
+| `security` | 指摘された `path:line` だけを直す修正 PR (`security` ラベル付き)。lint の抑制やキャストでの隠蔽、依存の version bump はしない | `agent-security-fix/issue-<n>` |
+| `prototype` | モックで良い試作の draft PR (`prototype` ラベル付き) | `agent-proto/issue-<n>` |
+| `implementation` | 本実装 (実 DB / API、エラーハンドリング、テスト込み) の PR。`prototype` ラベルも付いた Issue では走らない | `agent-implement/issue-<n>` |
+
+`App:<name>` ラベルが付いていれば編集を `apps/<name>` に絞り、PR にも同じラベルを引き継ぐ
+(`scope-label-prefix` / `scope-dir` で変えられる)。
+
+```yaml
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  work:
+    uses: omni-stove/.github/.github/workflows/issue-worker.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    with:
+      provider: "claude"
+      regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile'
+    secrets: inherit
+```
+
+| input | default | 説明 |
+| --- | --- | --- |
+| `issue-number` / `label` | `""` | 空なら `github.event.issue.number` / `github.event.label.name` を使う。`workflow_dispatch` から呼ぶときに渡す |
+| `provider` / `tier` / `model` / `effort` | `"claude"` / `"high"` / `""` / `""` | `agent-run` と同じ |
+| `allowed-tools` | Read / Edit / Write / Glob / Grep と pnpm / npm / make / git / gh / node 等の Bash | エージェントに許可するツール。`git commit` / `git push` / `gh pr create` / `gh pr merge` は常に deny |
+| `allowed-bots` | `"*"` | bot が付けたラベルでも起動する bot 名 (カンマ区切り)。公開リポジトリでは bot 名を列挙するか `""` にする |
+| `system-prompt` | 日本語で出力し、依存の install / テスト / lint をしない旨 | 追記するシステムプロンプト |
+| `instructions` | `""` | タスク指示に追記する文 (リポジトリ固有の規約や注意点) |
+| `scope-label-prefix` / `scope-dir` | `"App:"` / `"apps"` | 編集スコープのラベルとディレクトリ。接頭辞を `""` にすると無効 |
+| `base-branch` | `""` | PR の base (空なら既定ブランチ) |
+| `regen-command` | `""` | エージェントが `package.json` 等を変えたか `needs_regen` を申告したときに lockfile / 生成物を作り直すコマンド。空なら作り直さない (不整合は CI が落として知らせる) |
+| `node-version` | `"24"` | `regen-command` を動かす Node.js |
+| `timeout-minutes` | `60` | エージェントを含むジョブのタイムアウト |
+
+| secret | 必須 | 説明 |
+| --- | --- | --- |
+| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `provider: claude` のとき | Claude Code の認証 |
+| `OPENAI_API_KEY` | `provider: codex` のとき | Codex の認証 |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | 推奨 | PR を作る GitHub App (下記参照)。無ければ `github.token` で作るが、その PR では `pull_request` の CI が起動しない |
+
+outputs: `mode` (走らせなかったら空) / `pr-url` (作らなかったら空)。
+
+挙動:
+
+- **発火は `labeled` だけ**。ラベル付きで作成された Issue にも `labeled` は飛ぶので取りこぼさない。
+  `opened` も見ると同じ Issue に job が二重に走って同名ブランチへの push が衝突する。
+  ラベルを付けられるのは triage 権限以上なので、Issue を書けるだけの人は起動できない (Issue 本文はプロンプトに入る)。
+- **同じ Issue の再実行** (ラベルを外して付け直す) は同じブランチに push し、open PR があればそれを更新する。
+- **変更なし**で終わったら PR を作らず、エージェントの理由と実行ログの URL を Issue にコメントする。
+- **Closes / refs** は構造化出力の `closes_issue` だけで決める。エージェントの文面にある close 系キーワードは外す。
+- **起票は `gh issue create --label bug`** のようにラベル付きで作ればよい。大きなタスクは `remote-issue` skill
+  (skill-kit) で `bug` / `prototype` / `implementation` の Issue 群に分割して投げる。
+
 ### `deploy-cloudflare-worker.yml`
 
 Deploy a Cloudflare Worker.
@@ -427,9 +525,18 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 - ruleset / branch protection の必須チェックに `ci / CI Gate` (`ci` は呼び出し側の job 名) を登録する。
   Lint / Test / Review の個別ジョブは登録しない (スキップ時に pending のまま残るため)。
 
-### (任意) PR を作る agent 用の App
+### PR を作る agent 用の App
 
-Claude Code などが PR を作るワークフローで `github.token` の代わりに App token を使うと、
+`issue-worker.yml` など agent が PR を作るワークフローで `github.token` の代わりに App token を使うと、
 作成した PR の `pull_request` イベントで CI が起動する (`github.token` で作った PR では起動しない)。
-その場合も reviewer App とは**別の** App にする (同じ App だと自分の PR に approve できない)。
-`actions/github-app-token` で token を作り、`actions/checkout` の `token` や `gh` の `GH_TOKEN` に渡す。
+reviewer App とは**別の** App にする (同じ App だと自分の PR に approve できない)。
+
+| 項目 | 値 |
+| --- | --- |
+| GitHub App name | `omni-stove-agent` (任意。コミットと PR の author が `<name>[bot]` になる) |
+| Webhook | Active のチェックを外す |
+| Repository permissions | **Contents: Read and write** (ブランチへの push) <br> **Pull requests: Read and write** (PR 作成・ラベル) <br> **Issues: Read and write** (Issue の読み取り・コメント) <br> **Metadata: Read-only** (自動) |
+
+reviewer App と同じ手順でインストールし、organization secret に `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` を置く。
+`issue-worker.yml` は `secrets: inherit` で拾う。自前のワークフローでは `actions/github-app-token` で token を作り、
+`actions/checkout` の `token` や `gh` の `GH_TOKEN` に渡す。
