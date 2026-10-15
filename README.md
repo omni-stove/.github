@@ -87,7 +87,7 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 | `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review` / `run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
 | `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
-| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci.yml` / `ci-gate.yml` (`run-fix`) | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正は無ければ起動しない |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci.yml` / `ci-gate.yml` (`run-fix`) / `auto-merge.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正は無ければ起動しない。auto-merge は無ければ `github.token` でマージし、closing keyword で Issue が閉じない |
 | `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare-worker.yml` | Cloudflare の API token |
 
 ### ラベルと必須チェック

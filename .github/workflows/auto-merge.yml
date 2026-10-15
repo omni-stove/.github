@@ -15,6 +15,11 @@ on:
         description: マージ後に head ブランチを削除するか
         type: boolean
         default: true
+    secrets:
+      AGENT_GH_APP_ID:
+        required: false
+      AGENT_GH_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   auto-merge:
@@ -23,11 +28,23 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    env:
+      HAS_AGENT_APP: ${{ secrets.AGENT_GH_APP_ID != '' && secrets.AGENT_GH_APP_PRIVATE_KEY != '' }}
     steps:
+      # GITHUB_TOKEN でマージすると closing keyword による Issue の自動クローズも
+      # 既定ブランチへの push を契機にした workflow も起きないため、App があればそのトークンでマージする。
+      - name: Generate agent App token
+        id: app
+        if: env.HAS_AGENT_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.AGENT_GH_APP_ID }}
+          private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
+
       - name: Auto merge
         uses: pascalgn/automerge-action@v0.16.4
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
           MERGE_LABELS: ${{ inputs.merge-labels }}
           MERGE_METHOD: ${{ inputs.merge-method }}
           MERGE_DELETE_BRANCH: ${{ inputs.delete-branch }}
