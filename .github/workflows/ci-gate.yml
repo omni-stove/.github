@@ -1,7 +1,8 @@
 name: CI Gate
 
-# 呼び出し側に独自の test ジョブがあるときに、ci.yml (gate: false) と test ジョブの結果を
+# 呼び出し側に独自の lint / test ジョブがあるときに、ci.yml (gate: false) とそれらの結果を
 # まとめて CI Gate と finalize にする reusable workflow。必須チェックは "<この job 名> / CI Gate" になる。
+# lint も自前にするなら run-lint: false も渡す。
 #
 #   jobs:
 #     ci:
