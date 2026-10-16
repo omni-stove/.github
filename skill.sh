@@ -274,6 +274,7 @@ ${CATALOG}/README.md。reusable workflow の jobs: が composite action の並�
   CI の失敗とレビュー指摘をエージェントに直させるなら --fix も付ける (agent App が要る)。
 - test だけが収まらない: ci.yml を run-test: false と gate: false で呼び、test ジョブを自前に書き、
   ci-gate.yml で集約する (呼び出し方は ci-gate.yml のヘッダー。自動修正は ci-gate.yml の run-fix)。
+  lint も自前に書くなら run-lint: false も渡す (依存の install 無しで standalone の linter だけ走らせる等)。
 - lint や review まで収まらない、pnpm / Node の repo でない、ツールチェーンが複数ある:
   composite action を直接並べて書く。
 

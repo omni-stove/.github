@@ -44,13 +44,19 @@ on:
             timeoutMinutes   ジョブのタイムアウト (既定: 30)
         type: string
         default: ""
+      run-lint:
+        description: |
+          lint ジョブを走らせるか。false なら lint は skipped になり、CI Gate は失敗にしない。
+          呼び出し側に依存の install を要らない独自の lint ジョブがあるときに false にする
+        type: boolean
+        default: true
       run-test:
         description: test ジョブを走らせるか。false なら test は skipped になり、CI Gate は失敗にしない
         type: boolean
         default: true
       gate:
         description: |
-          この workflow 内で CI Gate と finalize を走らせるか。呼び出し側に独自の test ジョブがあり
+          この workflow 内で CI Gate と finalize を走らせるか。呼び出し側に独自の lint / test ジョブがあり
           ci-gate.yml で集約するときは false にする。
         type: boolean
         default: true
@@ -206,7 +212,7 @@ jobs:
   # ============================================================================
   lint:
     needs: changes
-    if: needs.changes.outputs.conflicted != 'true'
+    if: inputs.run-lint && needs.changes.outputs.conflicted != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
