@@ -8,14 +8,16 @@
 #   security       → security-fix (agent-security-fix/issue-<n>、PR に security ラベル)
 #   prototype      → proto        (agent-proto/issue-<n>、draft PR、PR に prototype ラベル)
 #   implementation → implement    (agent-implement/issue-<n>)
-# それ以外のラベル、閉じた Issue、prototype ラベルも付いた implementation は mode を空にして
-# skip_reason を書く。
+# それ以外のラベル、ALLOWED_USERS に無いユーザーが付けたラベル、閉じた Issue、prototype ラベルも
+# 付いた implementation は mode を空にして skip_reason を書く。
 #
 # 入力 (環境変数):
 #   ISSUE_NUMBER       - 対象 Issue 番号
 #   LABEL              - 今回付いたラベル名
 #   SCOPE_LABEL_PREFIX - 編集スコープを表すラベルの接頭辞 (例: "App:")。空なら無効
 #   SCOPE_DIR          - スコープのディレクトリ (例: "apps")。ラベル App:web → apps/web
+#   SENDER             - ラベルを付けたユーザーの login
+#   ALLOWED_USERS      - 起動を許すユーザーの login (カンマ区切り、大文字小文字は区別しない)。空なら誰でも
 #   GH_TOKEN           - gh 認証用
 #   GH_CMD             - テストで gh を差し替える (既定: gh)
 #   GITHUB_OUTPUT      - 出力先
@@ -59,6 +61,15 @@ case "$LABEL" in
   implementation) mode=implement; branch_prefix=agent-implement ;;
   *) skip "label '${LABEL}' does not start a worker" ;;
 esac
+
+if [ -n "${ALLOWED_USERS:-}" ]; then
+  # GitHub の login は大文字小文字を区別しない。
+  sender="$(tr '[:upper:]' '[:lower:]' <<<"${SENDER:-}")"
+  allowed="$(tr '[:upper:]' '[:lower:]' <<<"$ALLOWED_USERS" | tr ',' '\n' | tr -d ' \t')"
+  if [ -z "$sender" ] || ! grep -qxF -- "$sender" <<<"$allowed"; then
+    skip "label '${LABEL}' was added by '${SENDER:-}', who is not in allowed-users"
+  fi
+fi
 
 issue="$("$GH_CMD" issue view "$ISSUE_NUMBER" --json number,title,body,url,state,labels)"
 state="$(jq -r '.state' <<<"$issue")"

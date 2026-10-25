@@ -96,6 +96,32 @@ out() {
   [[ "$(out skip_reason)" == *"does not start a worker"* ]]
 }
 
+@test "skips a label added by a user outside ALLOWED_USERS without reading the issue" {
+  rm "$GH_CMD"
+  ISSUE_NUMBER=12 LABEL=bug SENDER=mallory ALLOWED_USERS="alice, bob" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -z "$(out mode)" ]
+  [[ "$(out skip_reason)" == *"'mallory', who is not in allowed-users"* ]]
+}
+
+@test "skips when ALLOWED_USERS is set and the sender is unknown" {
+  ISSUE_NUMBER=12 LABEL=bug ALLOWED_USERS=alice run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -z "$(out mode)" ]
+}
+
+@test "runs for a user in ALLOWED_USERS, ignoring case and spaces" {
+  ISSUE_NUMBER=12 LABEL=bug SENDER=Bob ALLOWED_USERS="alice, bob" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out mode)" = fix ]
+}
+
+@test "runs for anyone when ALLOWED_USERS is empty" {
+  ISSUE_NUMBER=12 LABEL=bug SENDER=mallory ALLOWED_USERS="" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out mode)" = fix ]
+}
+
 @test "skips a closed issue" {
   issue '["bug"]' CLOSED
   ISSUE_NUMBER=12 LABEL=bug run bash "$SCRIPT"
