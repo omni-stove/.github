@@ -55,16 +55,18 @@ teardown() {
   [[ "$output" == *"created	.github/workflows/hotfix-revert-approve.yml"* ]]
   [ ! -e .github/workflows/auto-merge.yml ]
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@main" .github/workflows/ci.yml
+  grep -qx "    uses: omni-stove/.github/.github/workflows/precheck.yml@main" .github/workflows/ci.yml
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci-gate.yml@main" .github/workflows/ci.yml
   grep -qx "        uses: omni-stove/.github/actions/setup-pnpm-node@main" .github/workflows/ci.yml
   grep -qx "          node-version: \"24\"" .github/workflows/ci.yml
   grep -qx "        run: 'pnpm lint'" .github/workflows/ci.yml
   grep -qx "        run: 'echo \"skip: no typecheck script\"'" .github/workflows/ci.yml
   grep -qx "        run: 'pnpm test'" .github/workflows/ci.yml
-  [ "$(grep -c "^    if: needs.checks.outputs.proceed == 'true'" .github/workflows/ci.yml)" -eq 2 ]
-  grep -qxF "    needs: [checks, lint, test]" .github/workflows/ci.yml
+  [ "$(grep -c "^    if: needs.precheck.outputs.proceed == 'true'" .github/workflows/ci.yml)" -eq 3 ]
+  grep -qxF "    needs: [precheck, checks, lint, test]" .github/workflows/ci.yml
   grep -qxF '      results: ${{ toJSON(needs) }}' .github/workflows/ci.yml
-  grep -qxF '      conflicted: ${{ needs.checks.outputs.conflicted }}' .github/workflows/ci.yml
+  grep -qxF '      conflicted: ${{ needs.precheck.outputs.conflicted }}' .github/workflows/ci.yml
+  grep -qxF '      review-result: ${{ needs.checks.outputs.review-result }}' .github/workflows/ci.yml
   grep -qx "      run-review: false" .github/workflows/ci.yml
   grep -qx "      finalize: false" .github/workflows/ci.yml
   ! grep -q "run-fix" .github/workflows/ci.yml
@@ -136,7 +138,7 @@ teardown() {
   bash "$SCRIPT" --ref v1 >/dev/null
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"update	.github/workflows/ci.yml の checks / CI Gate の with: と参照 (@v1) を引き継ぎ"* ]]
+  [[ "$output" == *"update	.github/workflows/ci.yml の precheck / checks / CI Gate の with: と参照 (@v1) を引き継ぎ"* ]]
   [[ "$output" == *"unchanged	.github/workflows/ci.yml"* ]]
   [[ "$output" == *"unchanged	.github/workflows/hotfix-revert-approve.yml"* ]]
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@v1" .github/workflows/ci.yml
@@ -178,7 +180,7 @@ teardown() {
     .github/workflows/ci.yml > ci.tmp && mv ci.tmp .github/workflows/ci.yml
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qxF "    needs: [checks, lint, test, build]" .github/workflows/ci.yml
+  grep -qxF "    needs: [precheck, checks, lint, test, build]" .github/workflows/ci.yml
   grep -qxF "      - run: pnpm build" .github/workflows/ci.yml
 }
 
@@ -212,13 +214,15 @@ jobs:
 YAML
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"update	.github/workflows/ci.yml を checks / lint / test / CI Gate の形に移す"* ]]
+  [[ "$output" == *"update	.github/workflows/ci.yml を precheck / checks / lint / test / CI Gate の形に移す"* ]]
   grep -qxF '      - "**/*.ts"' .github/workflows/ci.yml
   grep -qx "  # 必須チェック" .github/workflows/ci.yml
   grep -qx "  checks:" .github/workflows/ci.yml
   grep -qx "  build:" .github/workflows/ci.yml
-  grep -qxF "    needs: [checks, lint, test]" .github/workflows/ci.yml
+  grep -qxF "    needs: [precheck, checks, lint, test]" .github/workflows/ci.yml
+  grep -qx "    uses: omni-stove/.github/.github/workflows/precheck.yml@v1" .github/workflows/ci.yml
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci-gate.yml@v1" .github/workflows/ci.yml
+  [ "$(sed -n '/# 必須チェック/{n;p;}' .github/workflows/ci.yml)" = "  precheck:" ]
   grep -qx "        run: 'pnpm lint:all'" .github/workflows/ci.yml
   grep -qx "        run: 'pnpm test:all'" .github/workflows/ci.yml
   grep -qx "          node-version: \"22\"" .github/workflows/ci.yml
@@ -275,8 +279,57 @@ YAML
   grep -qx "      # 自前の bot だけを許す" .github/workflows/ci.yml
   grep -qx '      review-allowed-bots: "omni-stove-agent"' .github/workflows/ci.yml
   grep -qxF "      - run: biome ci ." .github/workflows/ci.yml
-  grep -qxF "    needs: [checks, lint]" .github/workflows/ci.yml
+  grep -qxF "    needs: [precheck, checks, lint]" .github/workflows/ci.yml
   ! grep -q "^  test:" .github/workflows/ci.yml
+}
+
+@test "adds the precheck job to a ci.yml whose checks job still ran it, moving the repo jobs' needs on checks" {
+  mkdir -p .github/workflows
+  cat > .github/workflows/ci.yml <<'YAML'
+on:
+  pull_request:
+
+jobs:
+  checks:
+    uses: omni-stove/.github/.github/workflows/ci.yml@main
+    with:
+      run-review: true
+    secrets: inherit
+
+  # 差分を見る
+  changes:
+    needs: checks
+    if: needs.checks.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+
+  lint:
+    needs: [checks, changes]
+    runs-on: ubuntu-latest
+    steps:
+      - run: biome ci .
+
+  ci:
+    needs: [checks, changes, lint]
+    if: always()
+    uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
+    with:
+      results: ${{ toJSON(needs) }}
+      conflicted: ${{ needs.checks.outputs.conflicted }}
+    secrets: inherit
+YAML
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(sed -n '/^jobs:/{n;p;}' .github/workflows/ci.yml)" = "  precheck:" ]
+  [ "$(sed -n '/^  checks:/{n;p;}' .github/workflows/ci.yml)" = "    needs: precheck" ]
+  [ "$(sed -n '/# 差分を見る/{n;n;p;}' .github/workflows/ci.yml)" = "    needs: precheck" ]
+  [ "$(sed -n '/# 差分を見る/{n;n;n;p;}' .github/workflows/ci.yml)" = "    if: needs.precheck.outputs.proceed == 'true'" ]
+  grep -qxF "    needs: [checks, changes]" .github/workflows/ci.yml
+  grep -qxF "    needs: [precheck, checks, changes, lint]" .github/workflows/ci.yml
+  grep -qxF '      conflicted: ${{ needs.precheck.outputs.conflicted }}' .github/workflows/ci.yml
+  run bash "$SCRIPT"
+  [[ "$output" == *"unchanged	.github/workflows/ci.yml"* ]]
 }
 
 @test "options given on an update override the carried-over values" {

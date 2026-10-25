@@ -1,32 +1,38 @@
 name: CI
 
-# CI Gate の前処理 (緊急避難口とコンフリクト判定) と Code Review を担う reusable workflow。
-# lint / test / build は呼び出し側が自分のジョブとして書き、結果は ci-gate.yml で CI Gate に集約する。
-# reusable workflow はジョブを入力として受け取れないため、リポジトリごとに違うセットアップやコマンドは
-# 呼び出し側に置く。
+# Code Review を担う reusable workflow。CI の組み立ては呼び出し側が行う:
+#
+#   precheck.yml   前処理 (緊急避難口とコンフリクト判定)。outputs.proceed が 'true' のときだけ後続を走らせる
+#   ci.yml (これ)  Code Review。指摘をインラインコメントにする
+#   自前のジョブ   lint / test / build。reusable workflow はジョブを入力として受け取れないため呼び出し側に書く
+#   ci-gate.yml    全ジョブの結果を単一の必須チェック "CI Gate" に集約し、approve / request-changes と自動修正を行う
 #
 #   jobs:
+#     precheck:
+#       uses: omni-stove/.github/.github/workflows/precheck.yml@main
 #     checks:
+#       needs: precheck
+#       if: needs.precheck.outputs.proceed == 'true'
 #       uses: omni-stove/.github/.github/workflows/ci.yml@main
 #       with: { run-review: true }
 #       secrets: inherit
 #     lint:
-#       needs: checks
-#       if: needs.checks.outputs.proceed == 'true'
+#       needs: precheck
+#       if: needs.precheck.outputs.proceed == 'true'
 #       ...
 #     ci:
-#       needs: [checks, lint]
+#       needs: [precheck, checks, lint]
 #       if: always()
 #       uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
 #       with:
 #         results: ${{ toJSON(needs) }}
-#         conflicted: ${{ needs.checks.outputs.conflicted }}
+#         conflicted: ${{ needs.precheck.outputs.conflicted }}
 #         review-comments: ${{ needs.checks.outputs.review-comments }}
 #         review-result: ${{ needs.checks.outputs.review-result }}
 #       secrets: inherit
 #
-# 呼び出し側のジョブは outputs.proceed が 'true' のときだけ走らせる。緊急避難口とコンフリクトの run では
-# 'true' にならず、どうせマージしない (できない) PR に lint / test のコストをかけない。
+# 前処理をこの workflow に含めないのは、呼び出し側の needs が呼んだ workflow の全ジョブの完了を待つため。
+# 含めると lint / test が Code Review の終わりまで始まらず、Code Review が落ちると lint / test が走らない。
 
 on:
   workflow_call:
@@ -81,12 +87,6 @@ on:
       REVIEWER_GH_APP_PRIVATE_KEY:
         required: false
     outputs:
-      proceed:
-        description: 呼び出し側の lint / test を走らせるなら 'true'。緊急避難口とコンフリクトの run では空か 'false'
-        value: ${{ jobs.precheck.outputs.proceed }}
-      conflicted:
-        description: PR がコンフリクトしていれば 'true'
-        value: ${{ jobs.precheck.outputs.conflicted }}
       review-comments:
         description: Code Review の構造化出力 ({"comments":[...]})
         value: ${{ jobs.review.outputs.comments }}
@@ -96,45 +96,11 @@ on:
 
 jobs:
   # ============================================================================
-  # 前処理: 緊急避難口の判定とコンフリクト判定
-  # ============================================================================
-  # hotfix / revert ラベル付き PR と revert- ブランチは通常 CI を走らせない (緊急避難口)。
-  # ここがスキップされると review と、proceed を見る呼び出し側のジョブが連鎖スキップされる。
-  # CI Gate は always() で走り、同じ条件を見て素通しの success を出す。
-  precheck:
-    if: >-
-      github.event_name != 'pull_request'
-      || (!contains(github.event.pull_request.labels.*.name, 'hotfix')
-        && !contains(github.event.pull_request.labels.*.name, 'revert')
-        && !startsWith(github.head_ref, 'revert-'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      pull-requests: read
-    outputs:
-      proceed: ${{ steps.conflict.outputs.conflicted != 'true' }}
-      conflicted: ${{ steps.conflict.outputs.conflicted || 'false' }}
-    steps:
-      # PR がベースとマージコンフリクトしている (mergeable_state=dirty) 場合は、どうせ
-      # マージできないので Lint / Test / Review を一切走らせずコストを削減する。
-      # コンフリクト解消で synchronize イベントが飛び、CI は再実行されて必須チェックが通る。
-      - name: Check PR conflict
-        id: conflict
-        if: github.event_name == 'pull_request'
-        uses: omni-stove/.github/actions/check-pr-conflict@main
-        with:
-          pr-number: ${{ github.event.pull_request.number }}
-
-  # ============================================================================
   # Code Review (指摘を出してインラインコメントとして投稿するだけ。提出は ci-gate.yml の finalize)
   # ============================================================================
   review:
     name: Code Review
-    needs: precheck
-    if: >-
-      inputs.run-review
-      && github.event_name == 'pull_request'
-      && needs.precheck.outputs.conflicted != 'true'
+    if: inputs.run-review && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

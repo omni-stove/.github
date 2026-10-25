@@ -18,8 +18,8 @@ gh api repos/omni-stove/.github/contents/install.sh -H 'Accept: application/vnd.
 
 共通側が持つのは CI Gate の仕組み (前処理・Code Review・集約・approve・自動修正) だけで、lint / test / build は
 利用側の `ci.yml` に自分のジョブとして書く。reusable workflow はジョブを入力として受け取れないため。
-install.sh が書く `ci.yml` は `checks` (共通 `ci.yml`) → `lint` / `test` (利用側のジョブ) → `ci` (共通 `ci-gate.yml`、
-必須チェック `ci / CI Gate`) の形になる。
+install.sh が書く `ci.yml` は `precheck` (共通 `precheck.yml`) → `checks` (共通 `ci.yml` の Code Review) と
+`lint` / `test` (利用側のジョブ) → `ci` (共通 `ci-gate.yml`、必須チェック `ci / CI Gate`) の形になる。
 
 検出するもの: `mise.toml` (`node = "..."`) → Node.js バージョン、`package.json` の `lint` / `typecheck` / `test` script →
 `lint` / `test` ジョブのコマンド (無ければ `echo "skip: ..."` にして `todo` を出す)、`origin/HEAD` または gh → 既定ブランチ、
@@ -27,9 +27,10 @@ install.sh が書く `ci.yml` は `checks` (共通 `ci.yml`) → `lint` / `test`
 
 2 回目以降は同じコマンドで更新になる。install.sh が作った workflow は最新のテンプレート (permissions や新しい input) に
 書き直され、`with:` の値 (手で直した値や追加した input も、その上のコメントごと) と `uses:` の参照は既存のものを引き継ぐ。
-`ci.yml` で書き直すのは共通側を呼ぶ `checks` と CI Gate のジョブだけで、`on:` などの冒頭と利用側のジョブには触らない
-(足したジョブは CI Gate の `needs` に入る)。以前の形 (共通 `ci.yml` を呼ぶジョブ 1 つ) は、その `with:` のコマンドで
-`lint` / `test` ジョブを作って今の形に移す。オプションで指定したものだけが上書きされ、`echo "skip: ..."` は検出し直す
+`ci.yml` で書き直すのは共通側を呼ぶ `precheck` / `checks` / CI Gate のジョブだけで、`on:` などの冒頭と利用側のジョブには
+触らない (足したジョブは CI Gate の `needs` に入る)。以前の形 (共通 `ci.yml` を呼ぶジョブ 1 つ) は、その `with:` のコマンドで
+`lint` / `test` ジョブを作って今の形に移す。`precheck` が無い形 (`checks` が前処理を持っていた頃) には `precheck` を足し、
+利用側のジョブの `needs: checks` と `needs.checks.outputs.proceed` を `precheck` に向け直す。オプションで指定したものだけが上書きされ、`echo "skip: ..."` は検出し直す
 (script を追加して再実行すれば本物のコマンドになる)。中身が同じなら `unchanged`、install.sh 以外が作ったファイルは `kept` で触らない。
 
 依存は bash と git だけ。gh でログインしていればラベル / secrets 確認 / ruleset まで行い、無ければ `todo` に落とす。

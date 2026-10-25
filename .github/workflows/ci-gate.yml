@@ -1,7 +1,8 @@
 name: CI Gate
 
-# 呼び出し側の lint / test などのジョブと ci.yml (前処理と Code Review) の結果を、単一の必須チェック
-# "CI Gate" に集約し、finalize と自動修正の起動もこのジョブで行う reusable workflow。必須チェックは "<この job 名> / CI Gate" になる。
+# 呼び出し側の precheck.yml / ci.yml (Code Review) / lint / test などのジョブの結果を、単一の必須チェック
+# "CI Gate" に集約し、finalize と自動修正の起動もこのジョブで行う reusable workflow。
+# 必須チェックは "<この job 名> / CI Gate" になる。
 # 呼び出し側の書き方は ci.yml のヘッダーを参照。
 #
 # - needs のどれかが failure / cancelled なら失敗する (skipped は失敗ではない)。hotfix / revert の
@@ -18,7 +19,7 @@ on:
         type: string
         required: true
       conflicted:
-        description: ci.yml の outputs.conflicted
+        description: precheck.yml の outputs.conflicted
         type: string
         default: "false"
       review-comments:
@@ -122,9 +123,9 @@ jobs:
           RESULTS: ${{ inputs.results }}
         run: |
           set -euo pipefail
-          # ci.yml の呼び出し (outputs に proceed を持つ) は Code Review の結果なので、lint / test の結果から外す。
+          # precheck.yml (outputs に proceed を持つ) と ci.yml (review-result を持つ) の呼び出しは lint / test ではないので外す。
           # 含めるとレビューが落ちただけの run を lint / test の失敗として自動修正してしまう。
-          list=$(jq -r '[.[] | select(.outputs.proceed == null) | .result // empty] | join(" ")' <<<"$RESULTS")
+          list=$(jq -r '[.[] | select((.outputs // {}) | has("proceed") or has("review-result") | not) | .result // empty] | join(" ")' <<<"$RESULTS")
           echo "list=${list}" >> "$GITHUB_OUTPUT"
           echo "job results: ${list}"
 

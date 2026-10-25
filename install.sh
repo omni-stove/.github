@@ -18,7 +18,7 @@ usage: install.sh [options]
 
   初回は workflow を作り、2 回目以降は install.sh が作った workflow を最新の形に更新する。
   更新では with: の値と uses: の参照を既存から引き継ぎ、オプションで指定したものだけ変える。
-  ci.yml で書き直すのは omni-stove/.github を呼ぶジョブ (checks と CI Gate) だけで、lint / test など
+  ci.yml で書き直すのは omni-stove/.github を呼ぶジョブ (precheck / checks / CI Gate) だけで、lint / test など
   リポジトリのジョブと on: などの冒頭には触らない。
 
   --review             Code Review (run-review: true) を有効にする
@@ -188,19 +188,25 @@ split_jobs() {
 
 EXISTING_CI="$(existing_ours .github/workflows/ci.yml)"
 # ci.yml splits its with: values between the job calling ci.yml (checks) and the one calling ci-gate.yml (CI Gate), so
-# they are read per job. A ci.yml of the previous form, one job calling ci.yml that ran lint / test / gate itself, is
-# read as LEGACY_CI and moved to the current form.
+# they are read per job. A ci.yml of the oldest form, one job calling ci.yml that ran lint / test / gate itself, is
+# read as LEGACY_CI and moved to the current form. A ci.yml whose checks job still ran the precheck (no job calls
+# precheck.yml) gets a precheck job, and its jobs' needs on checks move to it.
 CI_SPLIT="$(mktemp -d)"
 trap 'rm -rf "$CI_SPLIT"' EXIT
+PRECHECK_JOB=precheck
 CHECKS_JOB=checks
 GATE_JOB=ci
+PRECHECK_SRC=""
 CHECKS_SRC=""
 GATE_SRC=""
 LEGACY_CI=""
 if [ -n "$EXISTING_CI" ]; then
 	split_jobs "$EXISTING_CI" "$CI_SPLIT"
 	while IFS= read -r job; do
-		if grep -q "^    uses: ${ORG_REPO}/.github/workflows/ci.yml@" "$CI_SPLIT/jobs/$job"; then
+		if grep -q "^    uses: ${ORG_REPO}/.github/workflows/precheck.yml@" "$CI_SPLIT/jobs/$job"; then
+			PRECHECK_JOB="$job"
+			PRECHECK_SRC="$CI_SPLIT/jobs/$job"
+		elif grep -q "^    uses: ${ORG_REPO}/.github/workflows/ci.yml@" "$CI_SPLIT/jobs/$job"; then
 			CHECKS_JOB="$job"
 			CHECKS_SRC="$CI_SPLIT/jobs/$job"
 		elif grep -q "^    uses: ${ORG_REPO}/.github/workflows/ci-gate.yml@" "$CI_SPLIT/jobs/$job"; then
@@ -231,9 +237,9 @@ if [ -z "$REF" ]; then
 fi
 REF="${REF:-main}"
 if [ -n "$LEGACY_CI" ]; then
-	say update "$EXISTING_CI を checks / lint / test / CI Gate の形に移す。with: と参照 (@$REF) は引き継ぐ (--force で検出し直す)"
+	say update "$EXISTING_CI を precheck / checks / lint / test / CI Gate の形に移す。with: と参照 (@$REF) は引き継ぐ (--force で検出し直す)"
 elif [ -n "$EXISTING_CI" ]; then
-	say update "$EXISTING_CI の checks / CI Gate の with: と参照 (@$REF) を引き継ぎ、他のジョブは触らない (--force で検出し直す)"
+	say update "$EXISTING_CI の precheck / checks / CI Gate の with: と参照 (@$REF) を引き継ぎ、他のジョブは触らない (--force で検出し直す)"
 fi
 
 [ -n "$REVIEW" ] || REVIEW="$(scalar "$(pick "$CHECKS_SRC" run-review false)")"
@@ -348,9 +354,20 @@ write_file() {
 	say "$verb" "$path"
 }
 
+precheck_job() {
+	cat <<EOF
+  ${PRECHECK_JOB}:
+    uses: ${ORG_REPO}/.github/workflows/precheck.yml@${REF}
+    permissions:
+      pull-requests: read
+EOF
+}
+
 checks_job() {
 	cat <<EOF
   ${CHECKS_JOB}:
+    needs: ${PRECHECK_JOB}
+    if: needs.${PRECHECK_JOB}.outputs.proceed == 'true'
     uses: ${ORG_REPO}/.github/workflows/ci.yml@${REF}
     permissions:
       contents: read
@@ -381,7 +398,7 @@ gate_job() {
     with:
 $(with_block "$GATE_SRC" '^fix-' \
 	"results=\${{ toJSON(needs) }}" \
-	"conflicted=\${{ needs.${CHECKS_JOB}.outputs.conflicted }}" \
+	"conflicted=\${{ needs.${PRECHECK_JOB}.outputs.conflicted }}" \
 	"review-comments=\${{ needs.${CHECKS_JOB}.outputs.review-comments }}" \
 	"review-result=\${{ needs.${CHECKS_JOB}.outputs.review-result }}" \
 	"finalize=$([ "$REVIEW" = true ] || echo false)" \
@@ -393,14 +410,15 @@ $(with_block "$GATE_SRC" '^fix-' \
 EOF
 }
 
-# The repo's own lint / test jobs, written only when ci.yml is created or moved from the previous form.
-repo_jobs() {
+# A pnpm job of the repo named $1 with a timeout of $2 minutes, then a step per name and command pair in the rest.
+# lint_job / test_job write the repo's lint / test jobs only when ci.yml is created or moved from the oldest form.
+repo_step_job() {
 	cat <<EOF
-  lint:
-    needs: ${CHECKS_JOB}
-    if: needs.${CHECKS_JOB}.outputs.proceed == 'true'
+  ${1}:
+    needs: ${PRECHECK_JOB}
+    if: needs.${PRECHECK_JOB}.outputs.proceed == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${2}
     permissions:
       contents: read
     steps:
@@ -410,34 +428,18 @@ repo_jobs() {
         uses: ${ORG_REPO}/actions/setup-pnpm-node@${REF}
         with:
           node-version: ${NODE_VERSION_VALUE}
-
-      - name: Lint
-        run: ${LINT_COMMAND}
-
-      - name: Type check
-        run: ${TYPECHECK_COMMAND}
-
-  test:
-    needs: ${CHECKS_JOB}
-    if: needs.${CHECKS_JOB}.outputs.proceed == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup pnpm & Node.js
-        uses: ${ORG_REPO}/actions/setup-pnpm-node@${REF}
-        with:
-          node-version: ${NODE_VERSION_VALUE}
-
-      - name: Test
-        run: ${TEST_COMMAND}
 EOF
+	shift 2
+	while [ $# -gt 0 ]; do
+		printf '\n      - name: %s\n        run: %s\n' "$1" "$2"
+		shift 2
+	done
 }
+lint_job() { repo_step_job lint 15 Lint "$LINT_COMMAND" "Type check" "$TYPECHECK_COMMAND"; }
+test_job() { repo_step_job test 30 Test "$TEST_COMMAND"; }
 
-# A job of the repo as written, except that a skip placeholder whose script now exists becomes the real command.
+# A job of the repo as written, except that a skip placeholder whose script now exists becomes the real command,
+# and that a dependency on the checks job for its proceed output moves to the precheck job.
 repo_job() {
 	local script content placeholder command
 	content="$(cat "$1")"
@@ -447,11 +449,52 @@ repo_job() {
 		command="run: 'pnpm ${script}'"
 		content="${content//"$placeholder"/$command}"
 	done
+	if [ -z "$PRECHECK_SRC" ] && [ -n "$CHECKS_SRC" ]; then
+		placeholder="needs.${CHECKS_JOB}.outputs.proceed"
+		command="needs.${PRECHECK_JOB}.outputs.proceed"
+		content="${content//"$placeholder"/$command}"
+		content="$(printf '%s\n' "$content" | sed "s/^    needs: ${CHECKS_JOB}\$/    needs: ${PRECHECK_JOB}/")"
+	fi
 	printf '%s\n' "$content"
 }
 
 ci_workflow() {
-	local job lead needs="" first=true
+	local job lead i needs=""
+	local -a kinds=() names=() leads=()
+	ci_job() { kinds+=("$1"); names+=("$2"); leads+=("${3:-}"); }
+	if [ -z "$EXISTING_CI" ]; then
+		ci_job precheck "$PRECHECK_JOB"
+		ci_job checks "$CHECKS_JOB"
+		ci_job lint lint
+		ci_job test test
+		ci_job gate "$GATE_JOB"
+	else
+		while IFS= read -r job; do
+			lead="$(sed '/^[[:space:]]*$/d' "$CI_SPLIT/lead/$job")"
+			if [ "$job" = "$GATE_JOB" ] && [ -n "$LEGACY_CI" ]; then
+				ci_job precheck "$PRECHECK_JOB" "$lead"
+				ci_job checks "$CHECKS_JOB"
+				ci_job lint lint
+				ci_job test test
+				ci_job gate "$GATE_JOB"
+			elif [ "$job" = "$GATE_JOB" ]; then
+				ci_job gate "$job" "$lead"
+			elif [ "$job" = "$CHECKS_JOB" ] && [ -z "$PRECHECK_SRC" ]; then
+				ci_job precheck "$PRECHECK_JOB" "$lead"
+				ci_job checks "$job"
+			elif [ "$job" = "$CHECKS_JOB" ]; then
+				ci_job checks "$job" "$lead"
+			elif [ "$job" = "$PRECHECK_JOB" ] && [ -n "$PRECHECK_SRC" ]; then
+				ci_job precheck "$job" "$lead"
+			else
+				ci_job repo "$job" "$lead"
+			fi
+		done < "$CI_SPLIT/order"
+	fi
+	for i in "${!names[@]}"; do
+		[ "${kinds[$i]}" = gate ] || needs="$needs ${names[$i]}"
+	done
+
 	if [ -z "$EXISTING_CI" ]; then
 		cat <<EOF
 name: CI
@@ -466,41 +509,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-$(checks_job)
-
-$(repo_jobs)
-
-$(gate_job "${CHECKS_JOB} lint test")
 EOF
-		return
+	else
+		cat "$CI_SPLIT/header"
 	fi
-	while IFS= read -r job; do
-		if [ "$job" = "$GATE_JOB" ] && [ -n "$LEGACY_CI" ]; then
-			needs="$needs ${CHECKS_JOB} lint test"
-		elif [ "$job" != "$GATE_JOB" ]; then
-			needs="$needs $job"
-		fi
-	done < "$CI_SPLIT/order"
-	cat "$CI_SPLIT/header"
-	while IFS= read -r job; do
-		[ "$first" = true ] || echo
-		first=false
-		lead="$(sed '/^[[:space:]]*$/d' "$CI_SPLIT/lead/$job")"
-		[ -z "$lead" ] || printf '%s\n' "$lead"
-		if [ "$job" = "$GATE_JOB" ] && [ -n "$LEGACY_CI" ]; then
-			checks_job
-			echo
-			repo_jobs
-			echo
-			gate_job "${needs# }"
-		elif [ "$job" = "$GATE_JOB" ]; then
-			gate_job "${needs# }"
-		elif [ "$job" = "$CHECKS_JOB" ]; then
-			checks_job
-		else
-			repo_job "$CI_SPLIT/jobs/$job"
-		fi
-	done < "$CI_SPLIT/order"
+	for i in "${!names[@]}"; do
+		[ "$i" -eq 0 ] || echo
+		[ -z "${leads[$i]}" ] || printf '%s\n' "${leads[$i]}"
+		case "${kinds[$i]}" in
+			precheck) precheck_job ;;
+			checks) checks_job ;;
+			lint) lint_job ;;
+			test) test_job ;;
+			gate) gate_job "${needs# }" ;;
+			repo) repo_job "$CI_SPLIT/jobs/${names[$i]}" ;;
+		esac
+	done
 }
 
 CI_CONTENT="$(ci_workflow)"
