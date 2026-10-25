@@ -48,6 +48,10 @@ on:
         description: bot が付けたラベルでも起動する bot 名 (カンマ区切り)。公開リポジトリでは bot 名を列挙するか "" にする
         type: string
         default: "*"
+      allowed-users:
+        description: ラベルを付けたときに起動するユーザーの login (カンマ区切り)。空なら書き込み権限のある誰でも。公開リポジトリでは列挙する
+        type: string
+        default: ""
       system-prompt:
         description: 追記するシステムプロンプト
         type: string
@@ -124,6 +128,7 @@ jobs:
           label: ${{ inputs.label || github.event.label.name }}
           scope-label-prefix: ${{ inputs.scope-label-prefix }}
           scope-dir: ${{ inputs.scope-dir }}
+          allowed-users: ${{ inputs.allowed-users }}
 
       - name: Report
         env:
