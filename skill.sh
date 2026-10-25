@@ -267,10 +267,10 @@ composite action。上の catalog は用途と入出力の名前だけなので�
 (挙動・入力・出力・既定値は各 yml とそのヘッダーコメントが正)。GitHub App / secrets / ラベル / ruleset の手順は
 ${CATALOG}/README.md。reusable workflow の jobs: が composite action の並べ方の実例。
 
-ci.yml の形は checks (reusable workflow の ci.yml: 前処理と review) → repo の lint / test ジョブ → CI Gate
-(ci-gate.yml) で決まっていて、lint / test / build はどの repo でも呼び出し側のジョブとして書く (書き方は ci.yml の
-ヘッダー)。repo のジョブは needs: checks と if: needs.checks.outputs.proceed == 'true' で緊急避難口とコンフリクトの
-run を飛ばし、CI Gate の needs に全部並べる。
+ci.yml の形は precheck (precheck.yml: 前処理) → checks (ci.yml: Code Review) と repo の lint / test ジョブ →
+CI Gate (ci-gate.yml) で決まっていて、lint / test / build はどの repo でも呼び出し側のジョブとして書く (書き方は
+ci.yml のヘッダー)。checks と repo のジョブは needs: precheck と if: needs.precheck.outputs.proceed == 'true' で
+緊急避難口とコンフリクトの run を飛ばし、CI Gate の needs に全部並べる。
 - まず install.sh で雛形を作る (pnpm の lint / typecheck / test ジョブ、ラベル / secrets 確認 / ruleset まで行う。
   オプションは --help)。
     ${INSTALL_CMD} --review --ruleset

@@ -1,0 +1,42 @@
+name: Precheck
+
+# CI の前処理を担う reusable workflow。呼び出し側の Code Review (ci.yml) と lint / test などのジョブは、
+# outputs.proceed が 'true' のときだけ走らせる。呼び出し方は ci.yml のヘッダーを参照。
+#
+# - hotfix / revert ラベル付き PR と revert- ブランチ (緊急避難口) では、このジョブ自体が skipped になり
+#   proceed は空になる。CI Gate は always() で走り、同じ条件を見て素通しの success を出す。
+# - PR がベースとマージコンフリクトしている (mergeable_state=dirty) 場合は、どうせマージできないので
+#   proceed を 'false' にして後続のコストを削る。コンフリクト解消で synchronize イベントが飛び、CI は再実行される。
+
+on:
+  workflow_call:
+    outputs:
+      proceed:
+        description: 後続のジョブを走らせるなら 'true'。緊急避難口では空、コンフリクトでは 'false'
+        value: ${{ jobs.precheck.outputs.proceed }}
+      conflicted:
+        description: PR がコンフリクトしていれば 'true'
+        value: ${{ jobs.precheck.outputs.conflicted }}
+
+jobs:
+  precheck:
+    name: Precheck
+    if: >-
+      github.event_name != 'pull_request'
+      || (!contains(github.event.pull_request.labels.*.name, 'hotfix')
+        && !contains(github.event.pull_request.labels.*.name, 'revert')
+        && !startsWith(github.head_ref, 'revert-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.conflict.outputs.conflicted != 'true' }}
+      conflicted: ${{ steps.conflict.outputs.conflicted || 'false' }}
+    steps:
+      - name: Check PR conflict
+        id: conflict
+        if: github.event_name == 'pull_request'
+        uses: omni-stove/.github/actions/check-pr-conflict@main
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
