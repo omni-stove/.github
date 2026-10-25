@@ -1,7 +1,7 @@
 name: CI Gate
 
 # 呼び出し側の lint / test などのジョブと ci.yml (前処理と Code Review) の結果を、単一の必須チェック
-# "CI Gate" に集約する reusable workflow。必須チェックは "<この job 名> / CI Gate" になる。
+# "CI Gate" に集約し、finalize と自動修正の起動もこのジョブで行う reusable workflow。必須チェックは "<この job 名> / CI Gate" になる。
 # 呼び出し側の書き方は ci.yml のヘッダーを参照。
 #
 # - needs のどれかが failure / cancelled なら失敗する (skipped は失敗ではない)。hotfix / revert の
@@ -89,30 +89,10 @@ on:
         required: false
 
 jobs:
+  # CI Gate と finalize を別ジョブにすると、どちらも数秒で終わるのに 1 分ずつ課金されるため 1 ジョブにまとめる。
+  # finalize 側のステップは continue-on-error にして、提出の失敗で必須チェックを落とさない。
   ci-gate:
     name: CI Gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Gate on job results
-        uses: omni-stove/.github/actions/ci-gate@main
-        with:
-          results: ${{ inputs.results }}
-
-  # 緊急避難口 / コンフリクトの run では提出も修正もしない。needs が全て cancelled な run
-  # (concurrency のキャンセル) では呼び出し側の if: always() で来ても提出しないよう、
-  # ここで !cancelled() を見る。
-  finalize:
-    if: >-
-      !cancelled()
-      && (inputs.finalize || inputs.run-fix)
-      && github.event_name == 'pull_request'
-      && inputs.conflicted != 'true'
-      && !contains(github.event.pull_request.labels.*.name, 'hotfix')
-      && !contains(github.event.pull_request.labels.*.name, 'revert')
-      && !startsWith(github.head_ref, 'revert-')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -121,6 +101,14 @@ jobs:
     env:
       HAS_REVIEWER_APP: ${{ secrets.REVIEWER_GH_APP_ID != '' && secrets.REVIEWER_GH_APP_PRIVATE_KEY != '' }}
       HAS_AGENT_APP: ${{ secrets.AGENT_GH_APP_ID != '' && secrets.AGENT_GH_APP_PRIVATE_KEY != '' }}
+      # 緊急避難口 / コンフリクトの run では提出も修正もしない。
+      FINALIZE: >-
+        ${{ (inputs.finalize || inputs.run-fix)
+        && github.event_name == 'pull_request'
+        && inputs.conflicted != 'true'
+        && !contains(github.event.pull_request.labels.*.name, 'hotfix')
+        && !contains(github.event.pull_request.labels.*.name, 'revert')
+        && !startsWith(github.head_ref, 'revert-') }}
     outputs:
       should-fix: ${{ steps.decide-fix.outputs.should-fix }}
       trigger: ${{ steps.decide-fix.outputs.trigger }}
@@ -128,6 +116,8 @@ jobs:
     steps:
       - name: Collect job results
         id: results
+        if: env.FINALIZE == 'true'
+        continue-on-error: true
         env:
           RESULTS: ${{ inputs.results }}
         run: |
@@ -140,7 +130,8 @@ jobs:
 
       - name: Generate reviewer App token
         id: reviewer-token
-        if: inputs.finalize && env.HAS_REVIEWER_APP == 'true'
+        if: env.FINALIZE == 'true' && steps.results.outcome == 'success' && inputs.finalize && env.HAS_REVIEWER_APP == 'true'
+        continue-on-error: true
         uses: omni-stove/.github/actions/github-app-token@main
         with:
           app-id: ${{ secrets.REVIEWER_GH_APP_ID }}
@@ -148,7 +139,8 @@ jobs:
 
       - name: Finalize review
         id: finalize
-        if: inputs.finalize
+        if: env.FINALIZE == 'true' && steps.results.outcome == 'success' && steps.reviewer-token.outcome != 'failure' && inputs.finalize
+        continue-on-error: true
         uses: omni-stove/.github/actions/finalize-review@main
         with:
           pr-number: ${{ github.event.pull_request.number }}
@@ -160,7 +152,11 @@ jobs:
 
       - name: Decide auto-fix
         id: decide-fix
-        if: inputs.run-fix
+        if: >-
+          env.FINALIZE == 'true' && steps.results.outcome == 'success'
+          && steps.reviewer-token.outcome != 'failure' && steps.finalize.outcome != 'failure'
+          && inputs.run-fix
+        continue-on-error: true
         uses: omni-stove/.github/actions/decide-fix@main
         with:
           lint-test-results: ${{ steps.results.outputs.list }}
@@ -168,17 +164,24 @@ jobs:
           has-agent-app: ${{ env.HAS_AGENT_APP }}
           opt-out-path: ${{ inputs.fix-opt-out-path }}
 
+      # 必須チェックの成否はこのステップだけで決まるよう最後に置く。
+      - name: Gate on job results
+        uses: omni-stove/.github/actions/ci-gate@main
+        with:
+          results: ${{ inputs.results }}
+
+  # lint / test の失敗で ci-gate ジョブ自体は failure になるので、result ではなく should-fix だけを見る。
   fix:
-    needs: finalize
-    if: ${{ !cancelled() && needs.finalize.result == 'success' && needs.finalize.outputs.should-fix == 'true' }}
+    needs: ci-gate
+    if: ${{ !cancelled() && needs.ci-gate.outputs.should-fix == 'true' }}
     # permissions を書かず呼び出し側のものを引き継ぐ。actions: read を書くと、それを渡していない呼び出し側では
     # run-fix: false でも workflow の読み込み時に権限超過で落ちるため。
     uses: omni-stove/.github/.github/workflows/agent-fix.yml@main
     with:
       pr-number: ${{ github.event.pull_request.number }}
       ref: ${{ github.event.pull_request.head.ref }}
-      trigger: ${{ needs.finalize.outputs.trigger }}
-      fix-review-comments: ${{ needs.finalize.outputs.fix-review-comments }}
+      trigger: ${{ needs.ci-gate.outputs.trigger }}
+      fix-review-comments: ${{ needs.ci-gate.outputs.fix-review-comments }}
       workflow-run-id: ${{ github.run_id }}
       provider: ${{ inputs.fix-provider }}
       tier: ${{ inputs.fix-tier }}
