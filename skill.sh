@@ -267,16 +267,17 @@ composite action。上の catalog は用途と入出力の名前だけなので�
 (挙動・入力・出力・既定値は各 yml とそのヘッダーコメントが正)。GitHub App / secrets / ラベル / ruleset の手順は
 ${CATALOG}/README.md。reusable workflow の jobs: が composite action の並べ方の実例。
 
-形は、この repo の lint / test / review のうちどこまでが reusable workflow の ci.yml に収まるかで決める。
-- pnpm と lint / typecheck / test コマンドだけで足り、services / container / 独自 runner が要らない:
-  書かずに install.sh に任せる (ラベル / secrets 確認 / ruleset まで行う。オプションは --help)。
+ci.yml の形は checks (reusable workflow の ci.yml: 前処理と review) → repo の lint / test ジョブ → CI Gate
+(ci-gate.yml) で決まっていて、lint / test / build はどの repo でも呼び出し側のジョブとして書く (書き方は ci.yml の
+ヘッダー)。repo のジョブは needs: checks と if: needs.checks.outputs.proceed == 'true' で緊急避難口とコンフリクトの
+run を飛ばし、CI Gate の needs に全部並べる。
+- まず install.sh で雛形を作る (pnpm の lint / typecheck / test ジョブ、ラベル / secrets 確認 / ruleset まで行う。
+  オプションは --help)。
     ${INSTALL_CMD} --review --ruleset
   CI の失敗とレビュー指摘をエージェントに直させるなら --fix も付ける (agent App が要る)。
-- test だけが収まらない: ci.yml を run-test: false と gate: false で呼び、test ジョブを自前に書き、
-  ci-gate.yml で集約する (呼び出し方は ci-gate.yml のヘッダー。自動修正は ci-gate.yml の run-fix)。
-  lint も自前に書くなら run-lint: false も渡す (依存の install 無しで standalone の linter だけ走らせる等)。
-- lint や review まで収まらない、pnpm / Node の repo でない、ツールチェーンが複数ある:
-  composite action を直接並べて書く。
+- 雛形の lint / test ジョブを repo に合わせて書き換え、足りないジョブ (services / container / 独自 runner /
+  standalone の linter / 複数のツールチェーン) を足す。install.sh を再実行しても書き直すのは checks と CI Gate だけで、
+  repo のジョブは残り、CI Gate の needs に入る。
 
 どの形でも: 必須チェックは actions/ci-gate を呼ぶ job 1 つ ("<job 名> / CI Gate") に集約し、個別ジョブは登録しない。
 hotfix-revert-approve.yml を並べる。concurrency で同じ PR の古い run を止める。permissions は job ごとに最小。

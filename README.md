@@ -16,13 +16,20 @@ curl -fsSL https://raw.githubusercontent.com/omni-stove/.github/main/install.sh 
 gh api repos/omni-stove/.github/contents/install.sh -H 'Accept: application/vnd.github.raw' | bash -s -- --review --ruleset
 ```
 
+共通側が持つのは CI Gate の仕組み (前処理・Code Review・集約・approve・自動修正) だけで、lint / test / build は
+利用側の `ci.yml` に自分のジョブとして書く。reusable workflow はジョブを入力として受け取れないため。
+install.sh が書く `ci.yml` は `checks` (共通 `ci.yml`) → `lint` / `test` (利用側のジョブ) → `ci` (共通 `ci-gate.yml`、
+必須チェック `ci / CI Gate`) の形になる。
+
 検出するもの: `mise.toml` (`node = "..."`) → Node.js バージョン、`package.json` の `lint` / `typecheck` / `test` script →
-各コマンド (無ければ `echo "skip: ..."` または `run-test: false` にして `todo` を出す)、`origin/HEAD` または gh → 既定ブランチ、
+`lint` / `test` ジョブのコマンド (無ければ `echo "skip: ..."` にして `todo` を出す)、`origin/HEAD` または gh → 既定ブランチ、
 リポジトリの公開/非公開 → 公開なら `review-allowed-bots: ""` / `allowed-bots: ""`。
 
 2 回目以降は同じコマンドで更新になる。install.sh が作った workflow は最新のテンプレート (permissions や新しい input) に
-書き直され、`with:` の値 (手で直したコマンドや追加した input も) と `uses:` の参照は既存のものを引き継ぐ。
-オプションで指定したものだけが上書きされ、`echo "skip: ..."` / `run-test: false` は検出し直す
+書き直され、`with:` の値 (手で直した値や追加した input も、その上のコメントごと) と `uses:` の参照は既存のものを引き継ぐ。
+`ci.yml` で書き直すのは共通側を呼ぶ `checks` と CI Gate のジョブだけで、`on:` などの冒頭と利用側のジョブには触らない
+(足したジョブは CI Gate の `needs` に入る)。以前の形 (共通 `ci.yml` を呼ぶジョブ 1 つ) は、その `with:` のコマンドで
+`lint` / `test` ジョブを作って今の形に移す。オプションで指定したものだけが上書きされ、`echo "skip: ..."` は検出し直す
 (script を追加して再実行すれば本物のコマンドになる)。中身が同じなら `unchanged`、install.sh 以外が作ったファイルは `kept` で触らない。
 
 依存は bash と git だけ。gh でログインしていればラベル / secrets 確認 / ruleset まで行い、無ければ `todo` に落とす。
@@ -64,7 +71,7 @@ App の Install App → omni-stove → All repositories (または使うリポ�
 
 ### agent App
 
-`issue-worker.yml` など agent が PR を作る workflow と、`ci.yml` / `ci-gate.yml` の `run-fix` (自動修正) の push で
+`issue-worker.yml` など agent が PR を作る workflow と、`ci-gate.yml` の `run-fix` (自動修正) の push で
 `github.token` の代わりに使う。App token で作った PR や push では `pull_request` イベントで CI が起動する
 (`github.token` では起動しない)。
 
@@ -84,10 +91,10 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 
 | secret | 使う workflow | 値 |
 | --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review` / `run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
+| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `ci-gate.yml` (`run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
 | `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
-| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci.yml` / `ci-gate.yml` (`run-fix`) / `auto-merge.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正は無ければ起動しない。auto-merge は無ければ `github.token` でマージし、closing keyword で Issue が閉じない |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci-gate.yml` (`run-fix`) / `auto-merge.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正は無ければ起動しない。auto-merge は無ければ `github.token` でマージし、closing keyword で Issue が閉じない |
 | `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare-worker.yml` | Cloudflare の API token |
 
 ### ラベルと必須チェック
@@ -98,7 +105,7 @@ install.sh が作る。手で作るときは次のとおり。
 | --- | --- |
 | `hotfix` / `revert` | `ci.yml` / `hotfix-revert-approve.yml` |
 | `bug` / `security` / `prototype` / `implementation` | `issue-worker.yml` |
-| `skip-autofix` / `force-autofix` | `ci.yml` / `ci-gate.yml` (`run-fix`) |
+| `skip-autofix` / `force-autofix` | `ci-gate.yml` (`run-fix`) |
 
 レビュー指摘の自動修正を自分の PR で止めたい人は、既定ブランチの `.github/autofix-opt-out.yml` に GitHub の
 ユーザー名を書く (`users: [octocat, hubot]`)。lint / test の失敗の修正は止まらない。PR 1 件だけ止めるなら

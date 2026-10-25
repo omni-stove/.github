@@ -18,6 +18,8 @@ usage: install.sh [options]
 
   初回は workflow を作り、2 回目以降は install.sh が作った workflow を最新の形に更新する。
   更新では with: の値と uses: の参照を既存から引き継ぎ、オプションで指定したものだけ変える。
+  ci.yml で書き直すのは omni-stove/.github を呼ぶジョブ (checks と CI Gate) だけで、lint / test など
+  リポジトリのジョブと on: などの冒頭には触らない。
 
   --review             Code Review (run-review: true) を有効にする
   --fix                lint / test の失敗とレビュー指摘の自動修正 (run-fix: true) を有効にし、skip-autofix / force-autofix ラベルを作る
@@ -87,7 +89,8 @@ existing_ours() {
 	if [ "$FORCE" != true ] && [ -e "$1" ] && is_ours "$1"; then echo "$1"; fi
 }
 
-existing_ref() { sed -n -E "s#^    uses: ${ORG_REPO}/.github/workflows/[^@]+@(.+)\$#\1#p" "$1" | head -n1; }
+# The first match only: ci.yml calls two workflows, and head closing the pipe early would fail the run under pipefail.
+existing_ref() { awk -v prefix="    uses: ${ORG_REPO}/.github/workflows/" 'index($0, prefix) == 1 && /@/ { sub(/^[^@]*@/, ""); print; exit }' "$1"; }
 
 # What a generated workflow writes after "key:" in its with: block, as written; fails when the key is absent.
 with_value() {
@@ -98,12 +101,35 @@ with_value() {
 		END { exit found ? 0 : 1 }' "$1"
 }
 
-# with: lines of a generated workflow whose keys are not in the space-separated list, e.g. an install-filter the repo added.
+# with: entries of a generated workflow whose keys are not in the space-separated list (and match the regex when one
+# is given), e.g. a review-instructions the repo added, with the comment lines above them and multi-line values.
 with_extra() {
-	awk -v known=" $2 " '
+	awk -v known=" $2 " -v include="${3:-}" '
 		/^    with:[[:space:]]*$/ { inw = 1; next }
 		inw && /^    [^[:space:]]/ { inw = 0 }
-		inw && match($0, /^      [A-Za-z0-9_-]+:/) { if (index(known, " " substr($0, 7, RLENGTH - 7) " ") == 0) print }' "$1"
+		!inw { next }
+		/^      #/ { pending = pending $0 "\n"; next }
+		match($0, /^      [A-Za-z0-9_-]+:/) {
+			key = substr($0, 7, RLENGTH - 7)
+			keep = index(known, " " key " ") == 0 && (include == "" || key ~ include)
+			if (keep) printf "%s%s\n", pending, $0
+			pending = ""
+			next
+		}
+		/^       / { if (keep) print; next }
+		{ pending = "" }' "$1"
+}
+
+# The comment lines a generated workflow writes just above "key:" in its with: block.
+with_comment() {
+	[ -n "$1" ] || return 0
+	awk -v key="$2" '
+		/^    with:[[:space:]]*$/ { inw = 1; next }
+		inw && /^    [^[:space:]]/ { inw = 0 }
+		!inw { next }
+		/^      #/ { pending = pending $0 "\n"; next }
+		index($0, "      " key ":") == 1 { printf "%s", pending; exit }
+		{ pending = "" }' "$1"
 }
 
 # The value to write for a with: key: the existing file's, else the default.
@@ -122,18 +148,74 @@ scalar() {
 	printf '%s' "$s"
 }
 
-# The with: block from key=value arguments (an empty value drops the key), then the existing file's other keys as written.
+# The with: block from key=value arguments (an empty value drops the key), then the existing file's other keys as
+# written (only those matching the regex when one is given), each with the comment lines above it.
 with_block() {
-	local file="$1" keys="" arg
-	shift
+	local file="$1" include="$2" keys="" arg
+	shift 2
 	for arg in "$@"; do
 		keys="$keys ${arg%%=*}"
-		[ -z "${arg#*=}" ] || printf '      %s: %s\n' "${arg%%=*}" "${arg#*=}"
+		[ -n "${arg#*=}" ] || continue
+		with_comment "$file" "${arg%%=*}"
+		printf '      %s: %s\n' "${arg%%=*}" "${arg#*=}"
 	done
-	[ -z "$file" ] || with_extra "$file" "$keys"
+	[ -z "$file" ] || with_extra "$file" "$keys" "$include"
+}
+
+# Splits a workflow into dir/header (up to "jobs:"), dir/order (the job names in order), dir/jobs/<name> (the job's
+# lines) and dir/lead/<name> (the comment and blank lines just above the job).
+split_jobs() {
+	mkdir -p "$2/jobs" "$2/lead"
+	: > "$2/header"
+	: > "$2/order"
+	awk -v dir="$2" '
+		!injobs { print > (dir "/header"); if ($0 ~ /^jobs:[[:space:]]*$/) injobs = 1; next }
+		/^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+			name = $0
+			sub(/^  /, "", name)
+			sub(/:.*/, "", name)
+			print name >> (dir "/order")
+			printf "%s", pending > (dir "/lead/" name)
+			pending = ""
+			cur = dir "/jobs/" name
+			print > cur
+			next
+		}
+		/^[[:space:]]*$/ || /^#/ || /^ #/ || /^  #/ { pending = pending $0 "\n"; next }
+		cur != "" { printf "%s%s\n", pending, $0 > cur; pending = "" }
+		END { if (cur != "" && pending != "") printf "%s", pending > cur }' "$1"
 }
 
 EXISTING_CI="$(existing_ours .github/workflows/ci.yml)"
+# ci.yml splits its with: values between the job calling ci.yml (checks) and the one calling ci-gate.yml (CI Gate), so
+# they are read per job. A ci.yml of the previous form, one job calling ci.yml that ran lint / test / gate itself, is
+# read as LEGACY_CI and moved to the current form.
+CI_SPLIT="$(mktemp -d)"
+trap 'rm -rf "$CI_SPLIT"' EXIT
+CHECKS_JOB=checks
+GATE_JOB=ci
+CHECKS_SRC=""
+GATE_SRC=""
+LEGACY_CI=""
+if [ -n "$EXISTING_CI" ]; then
+	split_jobs "$EXISTING_CI" "$CI_SPLIT"
+	while IFS= read -r job; do
+		if grep -q "^    uses: ${ORG_REPO}/.github/workflows/ci.yml@" "$CI_SPLIT/jobs/$job"; then
+			CHECKS_JOB="$job"
+			CHECKS_SRC="$CI_SPLIT/jobs/$job"
+		elif grep -q "^    uses: ${ORG_REPO}/.github/workflows/ci-gate.yml@" "$CI_SPLIT/jobs/$job"; then
+			GATE_JOB="$job"
+			GATE_SRC="$CI_SPLIT/jobs/$job"
+		fi
+	done < "$CI_SPLIT/order"
+	if [ -n "$CHECKS_SRC" ] && [ -z "$GATE_SRC" ]; then
+		# The CI Gate job takes over the job name, which the required check "<job> / CI Gate" is named after.
+		LEGACY_CI="$CHECKS_SRC"
+		GATE_SRC="$CHECKS_SRC"
+		GATE_JOB="$CHECKS_JOB"
+		CHECKS_JOB=checks
+	fi
+fi
 EXISTING_HOTFIX="$(existing_ours .github/workflows/hotfix-revert-approve.yml)"
 EXISTING_AUTO_MERGE="$(existing_ours .github/workflows/auto-merge.yml)"
 EXISTING_ISSUE_WORKER="$(existing_ours .github/workflows/issue-worker.yml)"
@@ -148,11 +230,15 @@ if [ -z "$REF" ]; then
 	done
 fi
 REF="${REF:-main}"
-[ -z "$EXISTING_CI" ] || say update "$EXISTING_CI の with: と参照 (@$REF) を引き継ぐ (--force で検出し直す)"
+if [ -n "$LEGACY_CI" ]; then
+	say update "$EXISTING_CI を checks / lint / test / CI Gate の形に移す。with: と参照 (@$REF) は引き継ぐ (--force で検出し直す)"
+elif [ -n "$EXISTING_CI" ]; then
+	say update "$EXISTING_CI の checks / CI Gate の with: と参照 (@$REF) を引き継ぎ、他のジョブは触らない (--force で検出し直す)"
+fi
 
-[ -n "$REVIEW" ] || REVIEW="$(scalar "$(pick "$EXISTING_CI" run-review false)")"
-[ -n "$FIX" ] || FIX="$(scalar "$(pick "$EXISTING_CI" run-fix false)")"
-[ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$EXISTING_CI" review-provider "")")"
+[ -n "$REVIEW" ] || REVIEW="$(scalar "$(pick "$CHECKS_SRC" run-review false)")"
+[ -n "$FIX" ] || FIX="$(scalar "$(pick "$GATE_SRC" run-fix false)")"
+[ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$CHECKS_SRC" review-provider "")")"
 [ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$EXISTING_ISSUE_WORKER" provider claude)")"
 check_provider "$PROVIDER"
 
@@ -170,7 +256,7 @@ node_version() {
 	done
 	echo 24
 }
-NODE_VERSION_VALUE="$(pick "$EXISTING_CI" node-version "")"
+NODE_VERSION_VALUE="$(pick "$GATE_SRC" node-version "")"
 [ -n "$NODE_VERSION_VALUE" ] || NODE_VERSION_VALUE="\"$(node_version)\""
 NODE_VERSION="$(scalar "$NODE_VERSION_VALUE")"
 
@@ -183,16 +269,19 @@ has_script() {
 	fi
 }
 
-[ -f package.json ] || todo "package.json が無い。ci.yml の lint-command / typecheck-command / test-command を手で直す"
+[ -f package.json ] || todo "package.json が無い。ci.yml の lint / test ジョブのコマンドを手で直す"
 [ -f pnpm-lock.yaml ] || todo "pnpm-lock.yaml が無い。ci.yml は pnpm 前提 (setup-pnpm-node) なので pnpm に揃えるか workflow を書き換える"
 
 skip_command() { printf "'echo \"skip: no %s script\"'" "$1"; }
 
-# The existing command carries over unless it is the skip placeholder, which is detected again so that
-# adding the script and re-running install.sh turns it into the real command.
+# The command a job generated from the previous ci.yml form runs: its <name>-command unless that is the skip
+# placeholder, which is detected again so that adding the script and re-running install.sh turns it into the real
+# command. A test-command switched off by run-test: false is detected again too.
 command_value() {
-	local v
-	v="$(pick "$EXISTING_CI" "$1-command" "")"
+	local v=""
+	if [ "$1" != test ] || [ "$(scalar "$(pick "$LEGACY_CI" run-test true)")" = true ]; then
+		v="$(pick "$LEGACY_CI" "$1-command" "")"
+	fi
 	if [ -n "$v" ] && [ "$v" != "$(skip_command "$1")" ]; then
 		printf '%s' "$v"
 	elif has_script "$1"; then
@@ -203,18 +292,17 @@ command_value() {
 }
 LINT_COMMAND="$(command_value lint)"
 TYPECHECK_COMMAND="$(command_value typecheck)"
-TEST_COMMAND="$(pick "$EXISTING_CI" test-command "'pnpm test'")"
-RUN_TEST="$(scalar "$(pick "$EXISTING_CI" run-test false)")"
-if [ "$RUN_TEST" != true ]; then
-	has_script test && RUN_TEST=true || RUN_TEST=false
+TEST_COMMAND="$(command_value test)"
+
+say detect "default-branch=$DEFAULT_BRANCH node=$NODE_VERSION lint=$LINT_COMMAND typecheck=$TYPECHECK_COMMAND test=$TEST_COMMAND"
+
+if [ -n "$LEGACY_CI" ]; then
+	for key in test-jobs install-filter run-lint; do
+		! with_value "$LEGACY_CI" "$key" >/dev/null || todo "以前の ci.yml の $key は新しい形に無い。lint / test ジョブに手で移す"
+	done
 fi
-[ "$LINT_COMMAND" != "$(skip_command lint)" ] || todo "package.json に lint script が無い。追加して install.sh を再実行する (ci.yml の lint-command が pnpm lint になる)"
-[ "$TYPECHECK_COMMAND" != "$(skip_command typecheck)" ] || todo "package.json に typecheck script が無い。追加して install.sh を再実行する (ci.yml の typecheck-command が pnpm typecheck になる)"
-[ "$RUN_TEST" = true ] || todo "package.json に test script が無い。追加して install.sh を再実行する (ci.yml の run-test が true になる)"
 
-say detect "default-branch=$DEFAULT_BRANCH node=$NODE_VERSION lint=$LINT_COMMAND typecheck=$TYPECHECK_COMMAND test=$TEST_COMMAND run-test=$RUN_TEST"
-
-ALLOWED_BOTS="$(pick "$EXISTING_CI" review-allowed-bots "")"
+ALLOWED_BOTS="$(pick "$CHECKS_SRC" review-allowed-bots "")"
 if [ -z "$ALLOWED_BOTS" ] && [ "$VISIBILITY" = "PUBLIC" ]; then
 	ALLOWED_BOTS='""  # 公開リポジトリでは外部 App の PR でもレビューが起動してしまうため'
 fi
@@ -231,8 +319,8 @@ fi
 FIX_REGEN_COMMAND=""
 FIX_PROVIDER=""
 if [ "$FIX" = true ]; then
-	FIX_PROVIDER="$(pick "$EXISTING_CI" fix-provider "\"${PROVIDER}\"")"
-	FIX_REGEN_COMMAND="$(pick "$EXISTING_CI" regen-command "")"
+	FIX_PROVIDER="$(pick "$GATE_SRC" fix-provider "\"${PROVIDER}\"")"
+	FIX_REGEN_COMMAND="$(pick "$GATE_SRC" regen-command "")"
 	if [ -z "$FIX_REGEN_COMMAND" ] && [ -f pnpm-lock.yaml ]; then
 		FIX_REGEN_COMMAND="'pnpm install --lockfile-only --no-frozen-lockfile'"
 	fi
@@ -260,7 +348,112 @@ write_file() {
 	say "$verb" "$path"
 }
 
-write_file .github/workflows/ci.yml <<EOF
+checks_job() {
+	cat <<EOF
+  ${CHECKS_JOB}:
+    uses: ${ORG_REPO}/.github/workflows/ci.yml@${REF}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    with:
+$(with_block "$CHECKS_SRC" '^review-' \
+	"run-review=${REVIEW}" \
+	"review-provider=\"${PROVIDER}\"" \
+	"review-allowed-bots=${ALLOWED_BOTS}")
+    secrets: inherit
+EOF
+}
+
+# The CI Gate job, waiting for the space-separated jobs in $1.
+gate_job() {
+	cat <<EOF
+  ${GATE_JOB}:
+    needs: [${1// /, }]
+    if: always()
+    uses: ${ORG_REPO}/.github/workflows/ci-gate.yml@${REF}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write${CI_ACTIONS_PERMISSION}
+    with:
+$(with_block "$GATE_SRC" '^fix-' \
+	"results=\${{ toJSON(needs) }}" \
+	"conflicted=\${{ needs.${CHECKS_JOB}.outputs.conflicted }}" \
+	"review-comments=\${{ needs.${CHECKS_JOB}.outputs.review-comments }}" \
+	"review-result=\${{ needs.${CHECKS_JOB}.outputs.review-result }}" \
+	"finalize=$([ "$REVIEW" = true ] || echo false)" \
+	"run-fix=$([ "$FIX" = true ] && echo true)" \
+	"fix-provider=${FIX_PROVIDER}" \
+	"regen-command=${FIX_REGEN_COMMAND}" \
+	"node-version=$([ "$FIX" = true ] && echo "$NODE_VERSION_VALUE")")
+    secrets: inherit
+EOF
+}
+
+# The repo's own lint / test jobs, written only when ci.yml is created or moved from the previous form.
+repo_jobs() {
+	cat <<EOF
+  lint:
+    needs: ${CHECKS_JOB}
+    if: needs.${CHECKS_JOB}.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: ${ORG_REPO}/actions/setup-pnpm-node@${REF}
+        with:
+          node-version: ${NODE_VERSION_VALUE}
+
+      - name: Lint
+        run: ${LINT_COMMAND}
+
+      - name: Type check
+        run: ${TYPECHECK_COMMAND}
+
+  test:
+    needs: ${CHECKS_JOB}
+    if: needs.${CHECKS_JOB}.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm & Node.js
+        uses: ${ORG_REPO}/actions/setup-pnpm-node@${REF}
+        with:
+          node-version: ${NODE_VERSION_VALUE}
+
+      - name: Test
+        run: ${TEST_COMMAND}
+EOF
+}
+
+# A job of the repo as written, except that a skip placeholder whose script now exists becomes the real command.
+repo_job() {
+	local script content placeholder command
+	content="$(cat "$1")"
+	for script in lint typecheck test; do
+		has_script "$script" || continue
+		placeholder="run: $(skip_command "$script")"
+		command="run: 'pnpm ${script}'"
+		content="${content//"$placeholder"/$command}"
+	done
+	printf '%s\n' "$content"
+}
+
+ci_workflow() {
+	local job lead needs="" first=true
+	if [ -z "$EXISTING_CI" ]; then
+		cat <<EOF
 name: CI
 
 on:
@@ -273,28 +466,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
-    uses: ${ORG_REPO}/.github/workflows/ci.yml@${REF}
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write${CI_ACTIONS_PERMISSION}
-    with:
-$(with_block "$EXISTING_CI" \
-	"node-version=${NODE_VERSION_VALUE}" \
-	"lint-command=${LINT_COMMAND}" \
-	"typecheck-command=${TYPECHECK_COMMAND}" \
-	"test-command=${TEST_COMMAND}" \
-	"run-test=${RUN_TEST}" \
-	"run-review=${REVIEW}" \
-	"review-provider=\"${PROVIDER}\"" \
-	"review-allowed-bots=${ALLOWED_BOTS}" \
-	"run-fix=$([ "$FIX" = true ] && echo true)" \
-	"fix-provider=${FIX_PROVIDER}" \
-	"regen-command=${FIX_REGEN_COMMAND}")
-    secrets: inherit
+$(checks_job)
+
+$(repo_jobs)
+
+$(gate_job "${CHECKS_JOB} lint test")
 EOF
+		return
+	fi
+	while IFS= read -r job; do
+		if [ "$job" = "$GATE_JOB" ] && [ -n "$LEGACY_CI" ]; then
+			needs="$needs ${CHECKS_JOB} lint test"
+		elif [ "$job" != "$GATE_JOB" ]; then
+			needs="$needs $job"
+		fi
+	done < "$CI_SPLIT/order"
+	cat "$CI_SPLIT/header"
+	while IFS= read -r job; do
+		[ "$first" = true ] || echo
+		first=false
+		lead="$(sed '/^[[:space:]]*$/d' "$CI_SPLIT/lead/$job")"
+		[ -z "$lead" ] || printf '%s\n' "$lead"
+		if [ "$job" = "$GATE_JOB" ] && [ -n "$LEGACY_CI" ]; then
+			checks_job
+			echo
+			repo_jobs
+			echo
+			gate_job "${needs# }"
+		elif [ "$job" = "$GATE_JOB" ]; then
+			gate_job "${needs# }"
+		elif [ "$job" = "$CHECKS_JOB" ]; then
+			checks_job
+		else
+			repo_job "$CI_SPLIT/jobs/$job"
+		fi
+	done < "$CI_SPLIT/order"
+}
+
+CI_CONTENT="$(ci_workflow)"
+printf '%s\n' "$CI_CONTENT" | write_file .github/workflows/ci.yml
+for script in lint typecheck test; do
+	[[ "$CI_CONTENT" != *"run: $(skip_command "$script")"* ]] \
+		|| todo "package.json に $script script が無い。追加して install.sh を再実行する (ci.yml の run: $(skip_command "$script") が pnpm $script になる)"
+done
 
 write_file .github/workflows/hotfix-revert-approve.yml <<EOF
 name: Hotfix/Revert Approve
@@ -311,7 +525,7 @@ jobs:
       actions: write
       pull-requests: write
     with:
-$(with_block "$EXISTING_HOTFIX" 'ci-workflow="ci.yml"')
+$(with_block "$EXISTING_HOTFIX" "" 'ci-workflow="ci.yml"')
     secrets: inherit
 EOF
 
@@ -350,7 +564,7 @@ jobs:
       issues: write
       id-token: write
     with:
-$(with_block "$EXISTING_ISSUE_WORKER" \
+$(with_block "$EXISTING_ISSUE_WORKER" "" \
 	"provider=\"${PROVIDER}\"" \
 	"regen-command=${REGEN_COMMAND}" \
 	"allowed-bots=${WORKER_ALLOWED_BOTS}")

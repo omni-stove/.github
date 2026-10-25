@@ -55,12 +55,19 @@ teardown() {
   [[ "$output" == *"created	.github/workflows/hotfix-revert-approve.yml"* ]]
   [ ! -e .github/workflows/auto-merge.yml ]
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@main" .github/workflows/ci.yml
-  grep -qx "      node-version: \"24\"" .github/workflows/ci.yml
-  grep -qx "      lint-command: 'pnpm lint'" .github/workflows/ci.yml
-  grep -qx "      typecheck-command: 'echo \"skip: no typecheck script\"'" .github/workflows/ci.yml
-  grep -qx "      test-command: 'pnpm test'" .github/workflows/ci.yml
-  grep -qx "      run-test: true" .github/workflows/ci.yml
+  grep -qx "    uses: omni-stove/.github/.github/workflows/ci-gate.yml@main" .github/workflows/ci.yml
+  grep -qx "        uses: omni-stove/.github/actions/setup-pnpm-node@main" .github/workflows/ci.yml
+  grep -qx "          node-version: \"24\"" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm lint'" .github/workflows/ci.yml
+  grep -qx "        run: 'echo \"skip: no typecheck script\"'" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm test'" .github/workflows/ci.yml
+  [ "$(grep -c "^    if: needs.checks.outputs.proceed == 'true'" .github/workflows/ci.yml)" -eq 2 ]
+  grep -qxF "    needs: [checks, lint, test]" .github/workflows/ci.yml
+  grep -qxF '      results: ${{ toJSON(needs) }}' .github/workflows/ci.yml
+  grep -qxF '      conflicted: ${{ needs.checks.outputs.conflicted }}' .github/workflows/ci.yml
   grep -qx "      run-review: false" .github/workflows/ci.yml
+  grep -qx "      finalize: false" .github/workflows/ci.yml
+  ! grep -q "run-fix" .github/workflows/ci.yml
   grep -qxF "    branches: [main]" .github/workflows/ci.yml
   ! grep -q "review-allowed-bots" .github/workflows/ci.yml
   [[ "$output" == *"todo	package.json に typecheck script が無い"* ]]
@@ -73,14 +80,14 @@ teardown() {
   echo "v20" > .node-version
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qx "      node-version: \"22\"" .github/workflows/ci.yml
+  grep -qx "          node-version: \"22\"" .github/workflows/ci.yml
 }
 
 @test "reads the node version from a mise table value" {
   printf '[tools]\nnode = { version = "23", postinstall = "corepack enable" }\n' > mise.toml
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qx "      node-version: \"23\"" .github/workflows/ci.yml
+  grep -qx "          node-version: \"23\"" .github/workflows/ci.yml
 }
 
 @test "falls back to .node-version when mise.toml pins no node, and to 24 when nothing does" {
@@ -88,18 +95,18 @@ teardown() {
   echo "v20.1.0" > .node-version
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qx "      node-version: \"20\"" .github/workflows/ci.yml
+  grep -qx "          node-version: \"20\"" .github/workflows/ci.yml
   rm .node-version
   run bash "$SCRIPT" --force
-  grep -qx "      node-version: \"24\"" .github/workflows/ci.yml
+  grep -qx "          node-version: \"24\"" .github/workflows/ci.yml
 }
 
-@test "sets run-test false without a test script and takes the default branch from gh" {
+@test "writes the skip placeholder without a test script and takes the default branch from gh" {
   printf '{"scripts":{"lint":"x","typecheck":"y"}}\n' > package.json
   GH_DEFAULT_BRANCH=develop run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qx "      run-test: false" .github/workflows/ci.yml
-  grep -qx "      typecheck-command: 'pnpm typecheck'" .github/workflows/ci.yml
+  grep -qx "        run: 'echo \"skip: no test script\"'" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm typecheck'" .github/workflows/ci.yml
   grep -qxF "    branches: [develop]" .github/workflows/ci.yml
   [[ "$output" == *"todo	package.json に test script が無い"* ]]
 }
@@ -129,32 +136,147 @@ teardown() {
   bash "$SCRIPT" --ref v1 >/dev/null
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"update	.github/workflows/ci.yml の with: と参照 (@v1) を引き継ぐ"* ]]
+  [[ "$output" == *"update	.github/workflows/ci.yml の checks / CI Gate の with: と参照 (@v1) を引き継ぎ"* ]]
   [[ "$output" == *"unchanged	.github/workflows/ci.yml"* ]]
   [[ "$output" == *"unchanged	.github/workflows/hotfix-revert-approve.yml"* ]]
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@v1" .github/workflows/ci.yml
 }
 
-@test "updates a generated workflow to the current template, keeping edited with: values and extra keys" {
-  bash "$SCRIPT" --ref v1 >/dev/null
+@test "updates only the checks and CI Gate jobs, keeping edited with: values, extra keys and the repo's jobs" {
+  bash "$SCRIPT" --fix --ref v1 >/dev/null
   sed -i.bak \
-    -e "s|lint-command: 'pnpm lint'|lint-command: 'pnpm lint:ci'|" \
-    -e 's|node-version: "24"|node-version: "22"  # CI だけ古い|' \
+    -e "s|run: 'pnpm lint'|run: 'pnpm lint:ci'|" \
+    -e 's|          node-version: "24"|          node-version: "22"|' \
+    -e 's|      node-version: "24"|      node-version: "22"  # CI だけ古い|' \
     -e '/id-token: write/d' \
-    -e 's|^    with:$|    with:\n      install-filter: "web"|' \
+    -e 's|^      run-review: false$|      run-review: false\n      # 生成物は見ない\n      review-exclude-patterns: \|\n        "**/*.gen.ts"|' \
+    -e 's|^  pull_request:$|  pull_request:\n  workflow_dispatch:|' \
     .github/workflows/ci.yml
   rm .github/workflows/ci.yml.bak
   echo "x" > .node-version
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"updated	.github/workflows/ci.yml"* ]]
-  grep -qx "      id-token: write" .github/workflows/ci.yml
-  grep -qx "      lint-command: 'pnpm lint:ci'" .github/workflows/ci.yml
+  [ "$(grep -c "^      id-token: write" .github/workflows/ci.yml)" -eq 2 ]
+  grep -qx "        run: 'pnpm lint:ci'" .github/workflows/ci.yml
+  [ "$(grep -c '^          node-version: "22"$' .github/workflows/ci.yml)" -eq 2 ]
   grep -qx '      node-version: "22"  # CI だけ古い' .github/workflows/ci.yml
-  grep -qx '      install-filter: "web"' .github/workflows/ci.yml
+  grep -qx '      # 生成物は見ない' .github/workflows/ci.yml
+  grep -qxF '      review-exclude-patterns: |' .github/workflows/ci.yml
+  grep -qxF '        "**/*.gen.ts"' .github/workflows/ci.yml
+  grep -qx "  workflow_dispatch:" .github/workflows/ci.yml
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@v1" .github/workflows/ci.yml
   [[ "$output" == *"detect	default-branch=main node=22"* ]]
-  ! grep -q '^$' <(sed -n '/with:/,/secrets: inherit/p' .github/workflows/ci.yml)
+  ! grep -q '^$' <(sed -n '/^    with:/,/secrets: inherit/p' .github/workflows/ci.yml)
+  run bash "$SCRIPT"
+  [[ "$output" == *"unchanged	.github/workflows/ci.yml"* ]]
+}
+
+@test "an added repo job is kept and joins the CI Gate's needs" {
+  bash "$SCRIPT" >/dev/null
+  awk '/^  ci:$/ { print "  build:\n    needs: checks\n    runs-on: ubuntu-latest\n    steps:\n      - run: pnpm build\n" } { print }' \
+    .github/workflows/ci.yml > ci.tmp && mv ci.tmp .github/workflows/ci.yml
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qxF "    needs: [checks, lint, test, build]" .github/workflows/ci.yml
+  grep -qxF "      - run: pnpm build" .github/workflows/ci.yml
+}
+
+@test "moves a ci.yml of the previous form to checks, lint, test and CI Gate, keeping the job name and on:" {
+  mkdir -p .github/workflows
+  cat > .github/workflows/ci.yml <<'YAML'
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.ts"
+
+jobs:
+  # 必須チェック
+  build:
+    uses: omni-stove/.github/.github/workflows/ci.yml@v1
+    permissions:
+      contents: read
+    with:
+      node-version: "22"
+      lint-command: 'pnpm lint:all'
+      test-command: 'pnpm test:all'
+      run-test: true
+      test-jobs: '[{"name":"e2e","command":"pnpm e2e"}]'
+      run-review: true
+      review-instructions: "型を見る"
+      run-fix: true
+      fix-tier: "high"
+    secrets: inherit
+YAML
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"update	.github/workflows/ci.yml を checks / lint / test / CI Gate の形に移す"* ]]
+  grep -qxF '      - "**/*.ts"' .github/workflows/ci.yml
+  grep -qx "  # 必須チェック" .github/workflows/ci.yml
+  grep -qx "  checks:" .github/workflows/ci.yml
+  grep -qx "  build:" .github/workflows/ci.yml
+  grep -qxF "    needs: [checks, lint, test]" .github/workflows/ci.yml
+  grep -qx "    uses: omni-stove/.github/.github/workflows/ci-gate.yml@v1" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm lint:all'" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm test:all'" .github/workflows/ci.yml
+  grep -qx "          node-version: \"22\"" .github/workflows/ci.yml
+  grep -qx "      run-review: true" .github/workflows/ci.yml
+  grep -qx '      review-instructions: "型を見る"' .github/workflows/ci.yml
+  grep -qx "      run-fix: true" .github/workflows/ci.yml
+  grep -qx '      fix-tier: "high"' .github/workflows/ci.yml
+  grep -qx '      node-version: "22"' .github/workflows/ci.yml
+  ! grep -q "finalize:" .github/workflows/ci.yml
+  ! grep -q "lint-command\|test-command\|run-test\|test-jobs" .github/workflows/ci.yml
+  [ "$(sed -n '/^  checks:/,/^  lint:/p' .github/workflows/ci.yml | grep -c 'fix-tier\|run-fix')" -eq 0 ]
+  [ "$(sed -n '/^  build:/,$p' .github/workflows/ci.yml | grep -c 'review-instructions')" -eq 0 ]
+  [[ "$output" == *"todo	以前の ci.yml の test-jobs は新しい形に無い"* ]]
+  run bash "$SCRIPT"
+  [[ "$output" == *"unchanged	.github/workflows/ci.yml"* ]]
+}
+
+@test "drops the inputs ci.yml no longer has from a checks job that ran its own lint and test" {
+  mkdir -p .github/workflows
+  cat > .github/workflows/ci.yml <<'YAML'
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  checks:
+    uses: omni-stove/.github/.github/workflows/ci.yml@main
+    with:
+      run-lint: false
+      run-test: false
+      gate: false
+      run-review: true
+      # 自前の bot だけを許す
+      review-allowed-bots: "omni-stove-agent"
+    secrets: inherit
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: biome ci .
+
+  ci:
+    needs: [checks, lint]
+    if: always()
+    uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
+    with:
+      results: ${{ toJSON(needs) }}
+    secrets: inherit
+YAML
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q "run-lint\|run-test\|gate: false" .github/workflows/ci.yml
+  grep -qx "      # 自前の bot だけを許す" .github/workflows/ci.yml
+  grep -qx '      review-allowed-bots: "omni-stove-agent"' .github/workflows/ci.yml
+  grep -qxF "      - run: biome ci ." .github/workflows/ci.yml
+  grep -qxF "    needs: [checks, lint]" .github/workflows/ci.yml
+  ! grep -q "^  test:" .github/workflows/ci.yml
 }
 
 @test "options given on an update override the carried-over values" {
@@ -185,35 +307,35 @@ teardown() {
 }
 
 @test "re-detects the skip placeholders so an added script replaces them on update" {
+  printf '{"scripts":{"lint":"x"}}\n' > package.json
   bash "$SCRIPT" >/dev/null
-  grep -qx "      typecheck-command: 'echo \"skip: no typecheck script\"'" .github/workflows/ci.yml
+  grep -qx "        run: 'echo \"skip: no typecheck script\"'" .github/workflows/ci.yml
+  grep -qx "        run: 'echo \"skip: no test script\"'" .github/workflows/ci.yml
   printf '{"scripts":{"lint":"x","typecheck":"y","test":"z"}}\n' > package.json
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"updated	.github/workflows/ci.yml"* ]]
-  grep -qx "      typecheck-command: 'pnpm typecheck'" .github/workflows/ci.yml
-  [[ "$output" != *"typecheck script が無い"* ]]
+  grep -qx "        run: 'pnpm typecheck'" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm test'" .github/workflows/ci.yml
+  [[ "$output" != *"script が無い"* ]]
 }
 
-@test "run-test false is detected again once a test script exists" {
-  printf '{"scripts":{"lint":"x","typecheck":"y"}}\n' > package.json
-  bash "$SCRIPT" >/dev/null
-  grep -qx "      run-test: false" .github/workflows/ci.yml
-  printf '{"scripts":{"lint":"x","typecheck":"y","test":"z"}}\n' > package.json
+@test "a test-command switched off by run-test false in the previous form is detected again" {
+  mkdir -p .github/workflows
+  printf 'on:\n  pull_request:\n\njobs:\n  ci:\n    uses: omni-stove/.github/.github/workflows/ci.yml@main\n    with:\n      run-test: false\n    secrets: inherit\n' > .github/workflows/ci.yml
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qx "      run-test: true" .github/workflows/ci.yml
-  [[ "$output" != *"test script が無い"* ]]
+  grep -qx "        run: 'pnpm test'" .github/workflows/ci.yml
 }
 
 @test "--force drops the carried-over values and rewrites from detection" {
   bash "$SCRIPT" --review --ref v1 >/dev/null
-  sed -i.bak "s|lint-command: 'pnpm lint'|lint-command: 'pnpm lint:ci'|" .github/workflows/ci.yml
+  sed -i.bak "s|run: 'pnpm lint'|run: 'pnpm lint:ci'|" .github/workflows/ci.yml
   run bash "$SCRIPT" --force
   [ "$status" -eq 0 ]
   [[ "$output" == *"overwritten	.github/workflows/ci.yml"* ]]
   [[ "$output" != *"update	"* ]]
-  grep -qx "      lint-command: 'pnpm lint'" .github/workflows/ci.yml
+  grep -qx "        run: 'pnpm lint'" .github/workflows/ci.yml
   grep -qx "      run-review: false" .github/workflows/ci.yml
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@main" .github/workflows/ci.yml
 }
