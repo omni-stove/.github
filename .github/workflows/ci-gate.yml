@@ -1,28 +1,14 @@
 name: CI Gate
 
-# 呼び出し側に独自の lint / test ジョブがあるときに、ci.yml (gate: false) とそれらの結果を
-# まとめて CI Gate (finalize を含む) にする reusable workflow。必須チェックは "<この job 名> / CI Gate" になる。
-# lint も自前にするなら run-lint: false も渡す。
+# 呼び出し側の lint / test などのジョブと ci.yml (前処理と Code Review) の結果を、単一の必須チェック
+# "CI Gate" に集約し、finalize と自動修正の起動もこのジョブで行う reusable workflow。必須チェックは "<この job 名> / CI Gate" になる。
+# 呼び出し側の書き方は ci.yml のヘッダーを参照。
 #
-#   jobs:
-#     ci:
-#       uses: omni-stove/.github/.github/workflows/ci.yml@main
-#       with: { run-test: false, gate: false, run-review: true }
-#       secrets: inherit
-#     test:
-#       ...
-#     gate:
-#       needs: [ci, test]
-#       if: always()
-#       uses: omni-stove/.github/.github/workflows/ci-gate.yml@main
-#       with:
-#         results: ${{ toJSON(needs) }}
-#         conflicted: ${{ needs.ci.outputs.conflicted }}
-#         review-comments: ${{ needs.ci.outputs.review-comments }}
-#         review-result: ${{ needs.ci.outputs.review-result }}
-#       secrets: inherit
-#
-# run-fix なら ci.yml と同じく、統合結果から自動修正 (agent-fix.yml) を起動する。
+# - needs のどれかが failure / cancelled なら失敗する (skipped は失敗ではない)。hotfix / revert の
+#   緊急避難口は ci-gate アクションが判定して素通しの success にする。
+# - finalize は lint / test の結果とレビュー指摘から approve / request-changes を提出する。
+# - run-fix なら同じ統合結果から自動修正 (agent-fix.yml) を起動する。lint / test が落ちていれば
+#   trigger=ci、レビュー指摘があれば trigger=review。修正の push で CI が再実行され、その結果がまた戻る。
 
 on:
   workflow_call:
@@ -44,11 +30,14 @@ on:
         type: string
         default: ""
       finalize:
-        description: approve / request-changes を提出するか (ci.yml を run-review で呼んでいるときだけ true にする)
+        description: approve / request-changes を提出するか (ci.yml を run-review で呼んでいないときは false にする)
         type: boolean
         default: true
       run-fix:
-        description: lint / test の失敗とレビュー指摘をエージェントに直させるか (ci.yml の run-fix と同じ)
+        description: |
+          lint / test の失敗とレビュー指摘をエージェントに直させ、PR に push するか (agent-fix.yml)。
+          push で CI を再実行させるため AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY が要る (push はその App の
+          トークンで行う)。失敗ログを読むため、呼び出し側の permissions に actions: read が要る
         type: boolean
         default: false
       fix-provider:
@@ -133,7 +122,9 @@ jobs:
           RESULTS: ${{ inputs.results }}
         run: |
           set -euo pipefail
-          list=$(jq -r '[.[] | .result // empty] | join(" ")' <<<"$RESULTS")
+          # ci.yml の呼び出し (outputs に proceed を持つ) は Code Review の結果なので、lint / test の結果から外す。
+          # 含めるとレビューが落ちただけの run を lint / test の失敗として自動修正してしまう。
+          list=$(jq -r '[.[] | select(.outputs.proceed == null) | .result // empty] | join(" ")' <<<"$RESULTS")
           echo "list=${list}" >> "$GITHUB_OUTPUT"
           echo "job results: ${list}"
 

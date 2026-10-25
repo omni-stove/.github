@@ -118,7 +118,7 @@ teardown() {
   [[ "$output" == *$'\n  inputs: node-version frozen-lockfile install-filter\n'* ]]
   [[ "$output" == *$'\naction\tomni-stove/.github/actions/decide-fix@main\n'* ]]
   [[ "$output" == *$'\n  outputs: should-fix trigger fix-review-comments\n'* ]]
-  [[ "$output" == *$'\nworkflow\tomni-stove/.github/.github/workflows/ci.yml@main\n  Lint / Test / Code Review'* ]]
+  [[ "$output" == *$'\nworkflow\tomni-stove/.github/.github/workflows/ci.yml@main\n  CI Gate の前処理'* ]]
   [[ "$output" == *$'\nworkflow\tomni-stove/.github/.github/workflows/auto-merge.yml@main\n  Auto Merge\n'* ]]
   [[ "$output" == *$'\n  secrets: CLOUDFLARE_API_TOKEN\n'* ]]
   [[ "$output" != *"description:"* ]]
