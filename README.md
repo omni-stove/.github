@@ -72,7 +72,7 @@ App の Install App → omni-stove → All repositories (または使うリポ�
 
 ### agent App
 
-`issue-worker.yml` など agent が PR を作る workflow と、`ci-gate.yml` の `run-fix` (自動修正) の push と `run-merge` (自動マージ) で
+`issue-worker.yml` など agent が PR を作る workflow と、`ci-gate.yml` の `run-fix` (自動修正) の push と `run-merge` (自動マージ)、`unblock.yml` のラベル付けで
 `github.token` の代わりに使う。App token で作った PR や push では `pull_request` イベントで CI が起動する
 (`github.token` では起動しない)。
 
@@ -95,7 +95,7 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 | `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `ci-gate.yml` (`run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
 | `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
-| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci-gate.yml` (`run-fix` / `run-merge`) | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正と自動マージは無ければ起動しない |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci-gate.yml` (`run-fix` / `run-merge`) / `unblock.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正と自動マージと unblock は無ければ起動しない |
 | `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare-worker.yml` | Cloudflare の API token |
 
 ### ラベルと必須チェック
@@ -115,6 +115,11 @@ install.sh が作る。手で作るときは次のとおり。
 
 自動マージ (`run-merge`、install.sh の `--auto-merge`) は CI Gate が通り approve した PR を agent App のトークンでマージする。
 PR 1 件だけ止めるなら `skip-automerge` を付ける (`prototype` ラベルと draft の PR もマージしない)。
+
+`unblock.yml` (install.sh の `--unblock`) は Issue が閉じたら、それを待っていた sub-issue (blocked by で待ち合わせた
+Worker のラベルの無いもの) に `bug` / `implementation` を付けて Issue Worker に着手させる。`workflow_dispatch` で
+親 Issue を指定して (空ならすべての親を) 見直せる。ラベルは agent App が付けるので、`issue-worker.yml` で
+`allowed-bots: ""` や `allowed-users` を指定しているなら agent App の bot login を足す。
 
 ruleset / branch protection の必須チェックには `ci / CI Gate` (`ci` は呼び出し側の job 名) だけを登録する。
 Lint / Test / Review の個別ジョブは登録しない (スキップ時に pending のまま残るため)。

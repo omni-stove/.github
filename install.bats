@@ -535,6 +535,28 @@ YAML
   grep -qx "      provider: \"claude\"" .github/workflows/issue-worker.yml
 }
 
+@test "--unblock writes unblock.yml and asks for the agent App" {
+  run bash "$SCRIPT" --unblock --ref v1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created	.github/workflows/unblock.yml"* ]]
+  grep -qx "    uses: omni-stove/.github/.github/workflows/unblock.yml@v1" .github/workflows/unblock.yml
+  grep -qxF "    types: [closed]" .github/workflows/unblock.yml
+  grep -qx "  workflow_dispatch:" .github/workflows/unblock.yml
+  grep -qx "    secrets: inherit" .github/workflows/unblock.yml
+  [[ "$output" == *"todo	PR を作る agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY"* ]]
+  [[ "$output" != *"agent App の bot login"* ]]
+}
+
+@test "--unblock asks to let the agent App start the worker when issue-worker.yml disallows bots, and is kept on re-run" {
+  GH_VISIBILITY=PUBLIC run bash "$SCRIPT" --issue-worker --unblock
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"todo	issue-worker.yml の allowed-bots と allowed-users (指定していれば) に agent App の bot login"* ]]
+  run bash "$SCRIPT" --ref v2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"updated	.github/workflows/unblock.yml"* ]]
+  grep -qx "    uses: omni-stove/.github/.github/workflows/unblock.yml@v2" .github/workflows/unblock.yml
+}
+
 @test "without --issue-worker no worker labels or secrets are touched" {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]

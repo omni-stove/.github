@@ -285,6 +285,7 @@ hotfix-revert-approve.yml を並べる。concurrency で同じ PR の古い run 
 参照は @${REF} で揃える。secrets は inherit で渡す。
 コマンドは上の script / task にあるものだけを使い、無いものは作らず利用者に返す。
 Issue Worker / deploy は、この repo にその前提 (ラベル運用、wrangler 等) が見えるときだけ入れる。
+Issue を blocked by で待ち合わせて Issue Worker に回しているなら install.sh --unblock で unblock.yml も入れる (agent App が要る)。
 自動マージは ci-gate.yml の run-merge: true (install.sh --auto-merge) で入れ、agent App と skip-automerge の
 label-create が要る。auto-merge.yml (approve を契機にマージ) は使わない。
 自動修正を自前で組むなら、finalize 相当の job で actions/decide-fix を呼び、should-fix なら agent-fix.yml を呼ぶ。

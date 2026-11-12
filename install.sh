@@ -8,6 +8,7 @@ FIX=""
 PROVIDER=""
 AUTO_MERGE=""
 ISSUE_WORKER=false
+UNBLOCK=false
 FORCE=false
 RULESET=false
 LABELS=true
@@ -27,6 +28,7 @@ usage: install.sh [options]
   --auto-merge         CI Gate が通り approve した PR の自動マージ (run-merge: true) を有効にし、skip-automerge ラベルを作る。
                        以前の auto-merge.yml (approve を契機にマージ) があれば消してこれに移す
   --issue-worker       issue-worker.yml (Issue にラベルを付けるとエージェントが PR を作る) も入れ、prototype / implementation / security ラベルを作る (既にあれば指定しなくても更新する)
+  --unblock            unblock.yml (Issue が閉じたら、それを待っていた sub-issue に Issue Worker のラベルを付ける) も入れる (既にあれば指定しなくても更新する)
   --ruleset            既定ブランチに "ci / CI Gate" を必須チェックにする ruleset "CI Gate" を作る (同名があれば更新。gh と admin 権限が必要)
   --ref <ref>          omni-stove/.github の参照 (既定: 既存 workflow の参照、無ければ main)
   --force              既存の設定を引き継がず検出結果から書き直す (install.sh 以外が作ったファイルも上書きする)
@@ -42,6 +44,7 @@ while [ $# -gt 0 ]; do
 		--provider) PROVIDER="${2:?--provider には claude か codex を指定する}"; shift 2 ;;
 		--auto-merge) AUTO_MERGE=true; shift ;;
 		--issue-worker) ISSUE_WORKER=true; shift ;;
+		--unblock) UNBLOCK=true; shift ;;
 		--ruleset) RULESET=true; shift ;;
 		--ref) REF="${2:?--ref には参照を指定する}"; shift 2 ;;
 		--force) FORCE=true; shift ;;
@@ -227,10 +230,12 @@ EXISTING_HOTFIX="$(existing_ours .github/workflows/hotfix-revert-approve.yml)"
 EXISTING_AUTO_MERGE="$(existing_ours .github/workflows/auto-merge.yml)"
 EXISTING_ISSUE_WORKER="$(existing_ours .github/workflows/issue-worker.yml)"
 [ -z "$EXISTING_AUTO_MERGE" ] || AUTO_MERGE=true
+EXISTING_UNBLOCK="$(existing_ours .github/workflows/unblock.yml)"
 [ ! -e .github/workflows/issue-worker.yml ] || ISSUE_WORKER=true
+[ ! -e .github/workflows/unblock.yml ] || UNBLOCK=true
 
 if [ -z "$REF" ]; then
-	for f in "$EXISTING_CI" "$EXISTING_HOTFIX" "$EXISTING_AUTO_MERGE" "$EXISTING_ISSUE_WORKER"; do
+	for f in "$EXISTING_CI" "$EXISTING_HOTFIX" "$EXISTING_AUTO_MERGE" "$EXISTING_ISSUE_WORKER" "$EXISTING_UNBLOCK"; do
 		[ -n "$f" ] || continue
 		REF="$(existing_ref "$f")"
 		[ -z "$REF" ] || break
@@ -587,6 +592,33 @@ $(with_block "$EXISTING_ISSUE_WORKER" "" \
 EOF
 fi
 
+if [ "$UNBLOCK" = true ]; then
+	write_file .github/workflows/unblock.yml <<EOF
+name: Unblock
+
+on:
+  issues:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      parents:
+        description: 見る親 Issue の番号 (空白かカンマ区切り)。空なら open な sub-issue を持つすべての親
+        type: string
+        default: ""
+
+jobs:
+  unblock:
+    uses: ${ORG_REPO}/.github/workflows/unblock.yml@${REF}
+    permissions:
+      issues: read
+    secrets: inherit
+EOF
+	# Unblock labels as the agent App, and the worker skips a label from a bot or user it does not list.
+	if grep -q '^      allowed-bots: ""\|^      allowed-users:' .github/workflows/issue-worker.yml 2>/dev/null; then
+		todo "issue-worker.yml の allowed-bots と allowed-users (指定していれば) に agent App の bot login (<app-slug>[bot]) を足す (無いと Unblock が付けたラベルで Issue Worker が起動しない)"
+	fi
+fi
+
 create_label() {
 	gh label create "$1" --color "$2" --description "$3" --force >/dev/null 2>&1 && say label "$1" || say warning "ラベル $1 を作れなかった"
 }
@@ -627,15 +659,15 @@ if [ "$GH_OK" = true ]; then
 		{ has_secret REVIEWER_GH_APP_ID && has_secret REVIEWER_GH_APP_PRIVATE_KEY; } && say secret "REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY" \
 			|| todo "reviewer 用 GitHub App の REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY を secrets に置く (無いと bot の PR に approve できない): https://github.com/${ORG_REPO}#reviewer-app"
 	fi
-	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ] || [ "$AUTO_MERGE" = true ]; then
+	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ] || [ "$AUTO_MERGE" = true ] || [ "$UNBLOCK" = true ]; then
 		{ has_secret AGENT_GH_APP_ID && has_secret AGENT_GH_APP_PRIVATE_KEY; } && say secret "AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY" \
-			|| todo "PR を作り自動修正を push する agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動せず、自動修正も自動マージも動かない): https://github.com/${ORG_REPO}#agent-app"
+			|| todo "PR を作り自動修正を push する agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動せず、自動修正も自動マージも Unblock も動かない): https://github.com/${ORG_REPO}#agent-app"
 	fi
 else
 	[ "$REVIEW" != true ] || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), REVIEWER_GH_APP_ID, REVIEWER_GH_APP_PRIVATE_KEY"
 	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ]; then
 		todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
-	elif [ "$AUTO_MERGE" = true ]; then
+	elif [ "$AUTO_MERGE" = true ] || [ "$UNBLOCK" = true ]; then
 		todo "secrets を置く: AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
 	fi
 fi

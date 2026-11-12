@@ -1,0 +1,59 @@
+name: Unblock
+
+# Issue が閉じたら、それを待っていた sub-issue に Issue Worker のラベルを付けて着手させる reusable workflow。
+# 何を付け何を知らせるかは actions/unblock が持つ。
+#
+# 発火は呼び出し側の issues: closed と workflow_dispatch。closed は not planned も受ける (待っていた Issue に
+# 見送りを知らせるため)。Issue Worker の PR は agent App でマージされるので、Closes による自動クローズでも
+# closed イベントが届く。
+#
+# ラベルは agent App のトークンで付ける。github.token で付けた labeled イベントは Issue Worker を起動しない。
+# そのため agent App の secrets が無ければ何もしない。
+
+on:
+  workflow_call:
+    inputs:
+      parents:
+        description: workflow_dispatch で見る親 Issue の番号 (空白かカンマ区切り)。空なら open な sub-issue を持つすべての親
+        type: string
+        default: ""
+    secrets:
+      AGENT_GH_APP_ID:
+        required: false
+      AGENT_GH_APP_PRIVATE_KEY:
+        required: false
+
+jobs:
+  unblock:
+    name: Unblock
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 同時に閉じた Issue が同じ sub-issue に二重にコメントしないよう、リポジトリ内で直列にする。
+    concurrency:
+      group: unblock-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      issues: read
+    env:
+      # secrets は if で参照できないため env に落としてから step の if で見る。
+      HAS_AGENT_APP: ${{ secrets.AGENT_GH_APP_ID != '' && secrets.AGENT_GH_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Skip without the agent App
+        if: env.HAS_AGENT_APP != 'true'
+        run: echo '::notice::skipped, AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY が無い'
+
+      - name: Generate agent App token
+        id: app
+        if: env.HAS_AGENT_APP == 'true'
+        uses: omni-stove/.github/actions/github-app-token@main
+        with:
+          app-id: ${{ secrets.AGENT_GH_APP_ID }}
+          private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
+
+      - name: Unblock
+        if: env.HAS_AGENT_APP == 'true'
+        uses: omni-stove/.github/actions/unblock@main
+        with:
+          issue-number: ${{ github.event_name == 'issues' && github.event.issue.number || '' }}
+          parents: ${{ inputs.parents || github.event.inputs.parents }}
+          github-token: ${{ steps.app.outputs.token }}

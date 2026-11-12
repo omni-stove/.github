@@ -1,0 +1,31 @@
+name: Unblock
+description: |
+  Issue Worker を待っている sub-issue のうち、ブロックしていた Issue がすべて completed で閉じたものに
+  Worker のラベルを付けて着手させ、判断が要るものと manual のものはコメントで知らせる。
+  ロジックとテストは unblock.sh / unblock.bats を参照。
+
+inputs:
+  issue-number:
+    description: 閉じた Issue の番号。あれば、それがブロックしていた Issue だけを見る
+    required: false
+    default: ""
+  parents:
+    description: 見る親 Issue の番号 (空白かカンマ区切り)。issue-number も parents も空なら open な sub-issue を持つすべての親
+    required: false
+    default: ""
+  github-token:
+    description: ラベルとコメントを付けるトークン。github.token では labeled イベントが Issue Worker を起動しないため agent App のものを渡す
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Unblock waiting issues
+      shell: bash
+      env:
+        CLOSED_ISSUE: ${{ inputs.issue-number }}
+        PARENTS: ${{ inputs.parents }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        # checkout しないので、gh がリポジトリを推定できるよう明示する。
+        GH_REPO: ${{ github.repository }}
+      run: bash "$GITHUB_ACTION_PATH/unblock.sh"
