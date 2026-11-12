@@ -1,5 +1,9 @@
 name: Auto Merge
 
+# 廃止予定。CI Gate を待たず approve だけでマージするため、ci-gate.yml の run-merge に置き換えた
+# (install.sh を再実行すると呼び出し側の auto-merge.yml を消して run-merge: true に移す)。
+# まだ呼んでいるリポジトリがあるため残している。
+
 on:
   workflow_call:
     inputs:

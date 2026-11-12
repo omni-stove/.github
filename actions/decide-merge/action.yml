@@ -1,0 +1,51 @@
+name: Decide Merge
+description: |
+  CI Gate を通った PR を自動マージ (ci-gate.yml の merge ジョブ) するかを決める。
+  fork / draft の PR、skip-automerge / prototype ラベルの PR、自動修正がこれから push する run、
+  finalize の判定が approve でない run、agent App の secrets が無いときはマージしない。
+  判定のロジックとテストは decide-merge.sh / decide-merge.bats を参照。
+
+inputs:
+  should-fix:
+    description: 自動修正を起動するなら 'true' (decide-fix の should-fix)
+    required: false
+    default: "false"
+  finalize:
+    description: finalize を使うなら 'true'
+    required: false
+    default: "false"
+  decision:
+    description: finalize が提出した判定 (approve | request-changes)
+    required: false
+    default: ""
+  has-agent-app:
+    description: AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY があれば 'true'
+    required: false
+    default: "false"
+  skip-labels:
+    description: マージしない PR のラベル (カンマ区切り)
+    required: false
+    default: "skip-automerge,prototype"
+
+outputs:
+  should-merge:
+    description: 自動マージするなら 'true'
+    value: ${{ steps.decide.outputs.should_merge }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide whether to auto-merge
+      id: decide
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        PR_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        PR_DRAFT: ${{ github.event.pull_request.draft }}
+        PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        SKIP_LABELS: ${{ inputs.skip-labels }}
+        SHOULD_FIX: ${{ inputs.should-fix }}
+        FINALIZE: ${{ inputs.finalize }}
+        DECISION: ${{ inputs.decision }}
+        HAS_AGENT_APP: ${{ inputs.has-agent-app }}
+      run: bash "$GITHUB_ACTION_PATH/decide-merge.sh"

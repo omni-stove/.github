@@ -190,6 +190,7 @@ implementation|0e8a16|Issue Worker: 本実装の PR を作る
 security|e11d21|Issue Worker: 指摘箇所だけ直す修正 PR を作る
 skip-autofix|c5def5|この PR ではレビュー指摘を自動修正しない (lint / test の修正は続ける)
 force-autofix|c5def5|オプトアウトしていてもこの PR はレビュー指摘を自動修正する
+skip-automerge|c5def5|CI Gate が通ってもこの PR は自動マージしない
 LABELS
 
 	owner="${GH_REPO%%/*}"
@@ -283,7 +284,9 @@ ci.yml のヘッダー)。checks と repo のジョブは needs: precheck と if
 hotfix-revert-approve.yml を並べる。concurrency で同じ PR の古い run を止める。permissions は job ごとに最小。
 参照は @${REF} で揃える。secrets は inherit で渡す。
 コマンドは上の script / task にあるものだけを使い、無いものは作らず利用者に返す。
-Issue Worker / auto-merge / deploy は、この repo にその前提 (ラベル運用、wrangler 等) が見えるときだけ入れる。
+Issue Worker / deploy は、この repo にその前提 (ラベル運用、wrangler 等) が見えるときだけ入れる。
+自動マージは ci-gate.yml の run-merge: true (install.sh --auto-merge) で入れ、agent App と skip-automerge の
+label-create が要る。auto-merge.yml (approve を契機にマージ) は使わない。
 自動修正を自前で組むなら、finalize 相当の job で actions/decide-fix を呼び、should-fix なら agent-fix.yml を呼ぶ。
 どの形でも自動修正には呼び出し側の permissions の actions: read と agent App が要り、skip-autofix / force-autofix の
 label-create はそのときだけ実行する。

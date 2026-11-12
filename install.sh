@@ -6,7 +6,7 @@ REF=""
 REVIEW=""
 FIX=""
 PROVIDER=""
-AUTO_MERGE=false
+AUTO_MERGE=""
 ISSUE_WORKER=false
 FORCE=false
 RULESET=false
@@ -24,7 +24,8 @@ usage: install.sh [options]
   --review             Code Review (run-review: true) を有効にする
   --fix                lint / test の失敗とレビュー指摘の自動修正 (run-fix: true) を有効にし、skip-autofix / force-autofix ラベルを作る
   --provider <name>    レビューの provider (claude | codex)。既定: claude
-  --auto-merge         auto-merge.yml も入れる (既にあれば指定しなくても更新する)
+  --auto-merge         CI Gate が通り approve した PR の自動マージ (run-merge: true) を有効にし、skip-automerge ラベルを作る。
+                       以前の auto-merge.yml (approve を契機にマージ) があれば消してこれに移す
   --issue-worker       issue-worker.yml (Issue にラベルを付けるとエージェントが PR を作る) も入れ、prototype / implementation / security ラベルを作る (既にあれば指定しなくても更新する)
   --ruleset            既定ブランチに "ci / CI Gate" を必須チェックにする ruleset "CI Gate" を作る (同名があれば更新。gh と admin 権限が必要)
   --ref <ref>          omni-stove/.github の参照 (既定: 既存 workflow の参照、無ければ main)
@@ -225,7 +226,7 @@ fi
 EXISTING_HOTFIX="$(existing_ours .github/workflows/hotfix-revert-approve.yml)"
 EXISTING_AUTO_MERGE="$(existing_ours .github/workflows/auto-merge.yml)"
 EXISTING_ISSUE_WORKER="$(existing_ours .github/workflows/issue-worker.yml)"
-[ ! -e .github/workflows/auto-merge.yml ] || AUTO_MERGE=true
+[ -z "$EXISTING_AUTO_MERGE" ] || AUTO_MERGE=true
 [ ! -e .github/workflows/issue-worker.yml ] || ISSUE_WORKER=true
 
 if [ -z "$REF" ]; then
@@ -244,6 +245,7 @@ fi
 
 [ -n "$REVIEW" ] || REVIEW="$(scalar "$(pick "$CHECKS_SRC" run-review false)")"
 [ -n "$FIX" ] || FIX="$(scalar "$(pick "$GATE_SRC" run-fix false)")"
+[ -n "$AUTO_MERGE" ] || AUTO_MERGE="$(scalar "$(pick "$GATE_SRC" run-merge false)")"
 [ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$CHECKS_SRC" review-provider "")")"
 [ -n "$PROVIDER" ] || PROVIDER="$(scalar "$(pick "$EXISTING_ISSUE_WORKER" provider claude)")"
 check_provider "$PROVIDER"
@@ -396,13 +398,14 @@ gate_job() {
       issues: write
       id-token: write${CI_ACTIONS_PERMISSION}
     with:
-$(with_block "$GATE_SRC" '^fix-' \
+$(with_block "$GATE_SRC" '^(fix|merge)-' \
 	"results=\${{ toJSON(needs) }}" \
 	"conflicted=\${{ needs.${PRECHECK_JOB}.outputs.conflicted }}" \
 	"review-comments=\${{ needs.${CHECKS_JOB}.outputs.review-comments }}" \
 	"review-result=\${{ needs.${CHECKS_JOB}.outputs.review-result }}" \
 	"finalize=$([ "$REVIEW" = true ] || echo false)" \
 	"run-fix=$([ "$FIX" = true ] && echo true)" \
+	"run-merge=$([ "$AUTO_MERGE" = true ] && echo true)" \
 	"fix-provider=${FIX_PROVIDER}" \
 	"regen-command=${FIX_REGEN_COMMAND}" \
 	"node-version=$([ "$FIX" = true ] && echo "$NODE_VERSION_VALUE")")
@@ -553,22 +556,10 @@ $(with_block "$EXISTING_HOTFIX" "" 'ci-workflow="ci.yml"')
     secrets: inherit
 EOF
 
-if [ "$AUTO_MERGE" = true ]; then
-	write_file .github/workflows/auto-merge.yml <<EOF
-name: Auto Merge
-
-on:
-  pull_request_review:
-    types: [submitted]
-
-jobs:
-  auto-merge:
-    uses: ${ORG_REPO}/.github/workflows/auto-merge.yml@${REF}
-    permissions:
-      contents: write
-      pull-requests: write
-    secrets: inherit
-EOF
+# The CI Gate's run-merge took over, and leaving the old workflow would merge on any approval, CI Gate or not.
+if [ -n "$EXISTING_AUTO_MERGE" ]; then
+	rm "$EXISTING_AUTO_MERGE"
+	say removed "$EXISTING_AUTO_MERGE (ci.yml の CI Gate の run-merge に移した)"
 fi
 
 if [ "$ISSUE_WORKER" = true ]; then
@@ -608,6 +599,7 @@ if [ "$LABELS" = true ]; then
 			create_label skip-autofix c5def5 "この PR ではレビュー指摘を自動修正しない (lint / test の修正は続ける)"
 			create_label force-autofix c5def5 "オプトアウトしていてもこの PR はレビュー指摘を自動修正する"
 		fi
+		[ "$AUTO_MERGE" != true ] || create_label skip-automerge c5def5 "CI Gate が通ってもこの PR は自動マージしない"
 		if [ "$ISSUE_WORKER" = true ]; then
 			create_label prototype fbca04 "Issue Worker: モックで良い試作を draft PR にする"
 			create_label implementation 0e8a16 "Issue Worker: 本実装の PR を作る"
@@ -635,13 +627,17 @@ if [ "$GH_OK" = true ]; then
 		{ has_secret REVIEWER_GH_APP_ID && has_secret REVIEWER_GH_APP_PRIVATE_KEY; } && say secret "REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY" \
 			|| todo "reviewer 用 GitHub App の REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY を secrets に置く (無いと bot の PR に approve できない): https://github.com/${ORG_REPO}#reviewer-app"
 	fi
-	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ]; then
+	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ] || [ "$AUTO_MERGE" = true ]; then
 		{ has_secret AGENT_GH_APP_ID && has_secret AGENT_GH_APP_PRIVATE_KEY; } && say secret "AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY" \
-			|| todo "PR を作り自動修正を push する agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動せず、自動修正も動かない): https://github.com/${ORG_REPO}#agent-app"
+			|| todo "PR を作り自動修正を push する agent 用 GitHub App (reviewer とは別) の AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY を secrets に置く (無いと Issue Worker の PR で CI が起動せず、自動修正も自動マージも動かない): https://github.com/${ORG_REPO}#agent-app"
 	fi
 else
 	[ "$REVIEW" != true ] || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), REVIEWER_GH_APP_ID, REVIEWER_GH_APP_PRIVATE_KEY"
-	{ [ "$ISSUE_WORKER" != true ] && [ "$FIX" != true ]; } || todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
+	if [ "$ISSUE_WORKER" = true ] || [ "$FIX" = true ]; then
+		todo "secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
+	elif [ "$AUTO_MERGE" = true ]; then
+		todo "secrets を置く: AGENT_GH_APP_ID, AGENT_GH_APP_PRIVATE_KEY"
+	fi
 fi
 
 ruleset_done=false

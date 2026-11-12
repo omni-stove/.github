@@ -69,7 +69,7 @@ teardown() {
   grep -qxF '      review-result: ${{ needs.checks.outputs.review-result }}' .github/workflows/ci.yml
   grep -qx "      run-review: false" .github/workflows/ci.yml
   grep -qx "      finalize: false" .github/workflows/ci.yml
-  ! grep -q "run-fix" .github/workflows/ci.yml
+  ! grep -q "run-fix\|run-merge" .github/workflows/ci.yml
   grep -qxF "    branches: [main]" .github/workflows/ci.yml
   ! grep -q "review-allowed-bots" .github/workflows/ci.yml
   [[ "$output" == *"todo	package.json に typecheck script が無い"* ]]
@@ -351,12 +351,38 @@ YAML
   [[ "$output" == *"todo	gh secret set OPENAI_API_KEY"* ]]
 }
 
-@test "an existing auto-merge.yml is updated without --auto-merge" {
-  bash "$SCRIPT" --auto-merge >/dev/null
-  run bash "$SCRIPT" --ref v2
+@test "--auto-merge turns on run-merge with its label and the agent App, and it carries over" {
+  run bash "$SCRIPT" --auto-merge
   [ "$status" -eq 0 ]
-  [[ "$output" == *"updated	.github/workflows/auto-merge.yml"* ]]
-  grep -qx "    uses: omni-stove/.github/.github/workflows/auto-merge.yml@v2" .github/workflows/auto-merge.yml
+  grep -qx "      run-merge: true" .github/workflows/ci.yml
+  [ ! -e .github/workflows/auto-merge.yml ]
+  grep -q "label create skip-automerge" "$GH_LOG"
+  [[ "$output" == *"AGENT_GH_APP_ID"* ]]
+  sed -i.bak 's|^      run-merge: true$|      run-merge: true\n      merge-method: "rebase"|' .github/workflows/ci.yml
+  rm .github/workflows/ci.yml.bak
+  run bash "$SCRIPT"
+  [[ "$output" == *"unchanged	.github/workflows/ci.yml"* ]]
+  grep -qx '      merge-method: "rebase"' .github/workflows/ci.yml
+}
+
+@test "an approval-triggered auto-merge.yml is removed and moves to run-merge" {
+  mkdir -p .github/workflows
+  printf 'on:\n  pull_request_review:\n\njobs:\n  auto-merge:\n    uses: omni-stove/.github/.github/workflows/auto-merge.yml@v2\n    secrets: inherit\n' > .github/workflows/auto-merge.yml
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"removed	.github/workflows/auto-merge.yml"* ]]
+  [ ! -e .github/workflows/auto-merge.yml ]
+  grep -qx "      run-merge: true" .github/workflows/ci.yml
+  grep -qx "    uses: omni-stove/.github/.github/workflows/ci-gate.yml@v2" .github/workflows/ci.yml
+}
+
+@test "an auto-merge.yml install.sh did not write is kept" {
+  mkdir -p .github/workflows
+  echo mine > .github/workflows/auto-merge.yml
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(cat .github/workflows/auto-merge.yml)" = "mine" ]
+  ! grep -q "run-merge" .github/workflows/ci.yml
 }
 
 @test "re-detects the skip placeholders so an added script replaces them on update" {
@@ -402,8 +428,7 @@ YAML
   grep -q '^      review-allowed-bots: ""' .github/workflows/ci.yml
   grep -qx "    secrets: inherit" .github/workflows/ci.yml
   ! grep -q '^$' <(sed -n '/review-provider/,/secrets: inherit/p' .github/workflows/ci.yml)
-  [[ "$output" == *"created	.github/workflows/auto-merge.yml"* ]]
-  grep -qx "    uses: omni-stove/.github/.github/workflows/auto-merge.yml@v1" .github/workflows/auto-merge.yml
+  grep -qx "      run-merge: true" .github/workflows/ci.yml
   [[ "$output" == *"todo	gh secret set OPENAI_API_KEY"* ]]
   [[ "$output" == *"REVIEWER_GH_APP_ID / REVIEWER_GH_APP_PRIVATE_KEY を secrets に置く"* ]]
 }
