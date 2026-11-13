@@ -5,7 +5,7 @@
 #   loop     - 連続上限で打ち切ったことを marker 付きコメントで upsert する (毎回の run で増やさない)
 #   skipped  - 緊急避難口のラベルで push を見送ったので何も投稿しない
 #   external - 原因が PR の差分外にあり push を見送ったことと、エージェントの summary を投稿する
-#   conflict - rebase のコンフリクトで push を見送ったことを upsert し、summary も投稿する
+#   conflict - base のマージか積み直しのコンフリクトで push を見送ったことを upsert し、summary も投稿する
 #   それ以外 - summary を投稿する。pushed なら指摘ごとの対応 (.replies) を各スレッドへ返信する
 #              (push していないのに「処理済み」の返信だけ残さないため pushed のときだけ)
 # summary が空でも、何が起きたか追えるよう既定文言で 1 件は残す。
@@ -93,7 +93,7 @@ case "$RESULT" in
     exit 0
     ;;
   conflict)
-    upsert_comment "<!-- agent-fix-conflict -->" "自動修正 (\`[agent-fix]\`) を最新の \`${REF:-head}\` に rebase するとコンフリクトしたため、push を見送った。手で直してほしい。${run_link}"
+    upsert_comment "<!-- agent-fix-conflict -->" "自動修正 (\`[agent-fix]\`) を最新の \`${REF:-head}\` と base に積み直すとコンフリクトしたため、push を見送った。手で直してほしい。${run_link}"
     ;;
 esac
 

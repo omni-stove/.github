@@ -5,7 +5,7 @@ name: Agent Fix
 #
 # エージェントは依存を入れず、テストも走らせない。渡すのは actions/fix-context が集めた CI 失敗ログ・
 # PR の背景・未解決のレビュー指摘とコードだけで、push 後に走る次の CI が修正の検証になる。
-# commit / rebase / push / コメント投稿は決定論的に step が行う。
+# commit / base のマージ / push / コメント投稿は決定論的に step が行う。
 #
 # CI が lockfile / 生成物の不一致で落ちていたら、エージェントより先に regen-command で作り直す。
 # 生成物のずれはコマンドで決定的に直るのでエージェントに直させず、エージェントには残りの失敗だけを任せる。
@@ -113,8 +113,8 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@v6
         with:
-          # ループ防止が直近の max-consecutive 件のコミットを読む。rebase は対象ブランチを明示 fetch する。
-          fetch-depth: ${{ inputs.max-consecutive }}
+          # push 前の base のマージに共通祖先が要り、ループ防止は base のマージコミットを挟んで遡るため全履歴を取る。
+          fetch-depth: 0
           ref: ${{ inputs.ref }}
           # 作り直し (regen-command) が PR のコードを実行するため、書き込みトークンを .git/config に残さない。
           persist-credentials: false
@@ -212,7 +212,7 @@ jobs:
             diffs, or PR data. Where they fall short, say so in `summary` and fix what they cover.
 
             Do not run tests or try to validate; dependencies are not installed in this job.
-            Edit files and stop there; a later step commits, rebases, pushes, and comments on the PR.
+            Edit files and stop there; a later step commits, merges the base, pushes, and comments on the PR.
 
       # 直せない失敗に push すると CI → fix が空回りするため、push せず人間に委ねる。
       - name: Check external give-up

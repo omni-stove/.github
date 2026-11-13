@@ -9,7 +9,7 @@ setup() {
   : > "$CALLS"
   mkdir -p "${ROOT}/gitdir/hooks"
   : > "${ROOT}/gitdir/hooks/pre-push"
-  # staged=1 なら差分あり。rebase-fail / push-fail-N はその操作を失敗させる。
+  # staged=1 なら差分あり。merge-fail / cherry-pick-fail / push-fail-N はその操作を失敗させる。
   echo 1 > "${ROOT}/staged"
   export GIT_CMD="${ROOT}/git"
   cat > "$GIT_CMD" <<STUB
@@ -18,8 +18,8 @@ printf '%s\n' "\$*" >> "${CALLS}"
 case "\$1" in
   diff) [ "\$(cat "${ROOT}/staged")" = "0" ] ;;
   cat-file) grep -qxF "\${3#HEAD:}" "${ROOT}/head-paths" 2>/dev/null ;;
-  rev-parse) echo "${ROOT}/gitdir" ;;
-  rebase) [ "\$2" = "--abort" ] || [ ! -f "${ROOT}/rebase-fail" ] ;;
+  rev-parse) [ "\$2" = "HEAD" ] && echo fixsha || echo "${ROOT}/gitdir" ;;
+  merge | cherry-pick) [ "\$2" = "--abort" ] || [ ! -f "${ROOT}/\$1-fail" ] ;;
   push)
     n=\$(grep -c '^push' "${CALLS}")
     [ ! -f "${ROOT}/push-fail-\${n}" ]
@@ -50,8 +50,39 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -qx 'result=pushed' "$GITHUB_OUTPUT"
   grep -qxF 'commit --no-verify -m [agent-fix] 型エラーを直した' "$CALLS"
-  grep -qxF 'rebase origin/feature/x' "$CALLS"
+  grep -qxF 'checkout -q --detach origin/feature/x' "$CALLS"
+  grep -qxF 'cherry-pick fixsha' "$CALLS"
   grep -qxF 'push origin HEAD:feature/x' "$CALLS"
+  ! grep -q '^merge' "$CALLS"
+}
+
+@test "merges the base under the fix commit before pushing" {
+  BASE=main run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=pushed' "$GITHUB_OUTPUT"
+  grep -qxF 'fetch origin feature/x main' "$CALLS"
+  [ "$(grep -E '^(checkout -q --detach|merge|cherry-pick|push)' "$CALLS")" = "$(printf '%s\n' \
+    'checkout -q --detach origin/feature/x' \
+    'merge --no-edit -m Merge main into feature/x origin/main' \
+    'cherry-pick fixsha' \
+    'push origin HEAD:feature/x')" ]
+}
+
+@test "looks up the base from the PR when BASE is not given" {
+  echo develop > "${ROOT}/labels"
+  PR=1 REPO=o/r BYPASS_LABELS=none run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qxF 'merge --no-edit -m Merge develop into feature/x origin/develop' "$CALLS"
+}
+
+@test "conflict on merging the base aborts it and does not push" {
+  : > "${ROOT}/merge-fail"
+  BASE=main run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=conflict' "$GITHUB_OUTPUT"
+  grep -qx 'merge --abort' "$CALLS"
+  ! grep -q '^cherry-pick' "$CALLS"
+  ! grep -q '^push' "$CALLS"
 }
 
 @test "falls back to a default subject without a summary" {
@@ -75,12 +106,12 @@ teardown() {
   ! grep -q '^add' "$CALLS"
 }
 
-@test "conflict aborts the rebase and does not push" {
-  : > "${ROOT}/rebase-fail"
+@test "conflict on applying the fix commit aborts it and does not push" {
+  : > "${ROOT}/cherry-pick-fail"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -qx 'result=conflict' "$GITHUB_OUTPUT"
-  grep -qx 'rebase --abort' "$CALLS"
+  grep -qx 'cherry-pick --abort' "$CALLS"
   ! grep -q '^push' "$CALLS"
 }
 
@@ -90,6 +121,7 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -qx 'result=pushed' "$GITHUB_OUTPUT"
   [ "$(grep -c '^fetch' "$CALLS")" -eq 2 ]
+  [ "$(grep -c '^cherry-pick fixsha' "$CALLS")" -eq 2 ]
 }
 
 @test "fails after the retry limit" {

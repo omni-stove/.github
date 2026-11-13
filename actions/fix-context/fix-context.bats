@@ -11,6 +11,7 @@ setup() {
   export GIT_CMD="${ROOT}/git"
   cat > "$GIT_CMD" <<STUB
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${ROOT}/git-calls"
 cat "${ROOT}/log"
 STUB
   chmod +x "$GIT_CMD"
@@ -51,6 +52,12 @@ output_value() {
   [ "$status" -eq 0 ]
   grep -qx 'skip=false' "$GITHUB_OUTPUT"
   grep -qx 'count=2' "$GITHUB_OUTPUT"
+}
+
+@test "guard: walks the first parents and skips the base merges" {
+  printf '[agent-fix] a\n' > "${ROOT}/log"
+  run bash "${DIR}/guard-fix-loop.sh"
+  grep -qx 'log --first-parent --no-merges -n 3 --pretty=%s' "${ROOT}/git-calls"
 }
 
 @test "guard: skip=true at the limit" {

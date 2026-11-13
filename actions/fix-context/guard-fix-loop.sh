@@ -2,6 +2,7 @@
 # HEAD から遡って自動修正コミット (件名が COMMIT_PREFIX で始まる) が連続している数を数え、
 # MAX_CONSECUTIVE 以上なら skip=true を出す (修正 → push → 再 CI の無限ループ防止)。
 # 人間のコミットが挟まれば数え直しになる。actions/fix-context から呼ばれる。
+# PR ブランチの first-parent をマージコミットを飛ばして数えるので、base のマージだけでは数え直しにならない。
 #
 # 入力 (環境変数):
 #   MAX_CONSECUTIVE - 連続上限 (既定: 3)
@@ -22,7 +23,8 @@ while IFS= read -r subject; do
     "$COMMIT_PREFIX"*) count=$((count + 1)) ;;
     *) break ;;
   esac
-done < <("${GIT_CMD}" log -n "$MAX_CONSECUTIVE" --pretty=%s)
+# 自動修正は毎回 base のマージの上に積まれるため、マージコミットで止めると連続が途切れて上限に届かない。
+done < <("${GIT_CMD}" log --first-parent --no-merges -n "$MAX_CONSECUTIVE" --pretty=%s)
 
 echo "consecutive ${COMMIT_PREFIX} commits: ${count} (max: ${MAX_CONSECUTIVE})"
 echo "count=${count}" >> "$GITHUB_OUTPUT"

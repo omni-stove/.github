@@ -3,9 +3,10 @@
 # actions/push-agent-fix から呼ばれる。エージェントには編集だけさせ、commit 粒度とメッセージは
 # ここで確定させる (commit し忘れや複数コミットへの分割を防ぐ)。
 #
-# エージェントの実行中に作成者が push してリモートが進んでいても、fetch → rebase で上に積み直して
-# 取りこぼさない。push が reject されたら (さらに別の push が入った) fetch から再試行する。
-# rebase がコンフリクトしたら積まずに人間に委ねる。
+# push の前に最新の PR head に最新の base をマージし、その上に自動修正コミットを積み直す。エージェントの
+# 実行中に作成者が push してリモートが進んでいても取りこぼさず、push 後の CI は最新の base に対して走る。
+# push が reject されたら (さらに別の push が入った) fetch から再試行する。
+# マージか積み直しがコンフリクトしたら積まずに人間に委ねる。
 #
 # エージェントの実行中に緊急避難口のラベルが付くと、ラベル付与時の run キャンセルをすり抜けて
 # ここに到達しうるので、commit の前にラベルを確認して何もしない。
@@ -16,13 +17,14 @@
 # 出力 (GITHUB_OUTPUT の result):
 #   pushed   - commit して push した
 #   noop     - 作業ツリーに変更が無かった
-#   conflict - rebase がコンフリクトした (abort 済み)
+#   conflict - base のマージか自動修正コミットの積み直しがコンフリクトした (abort 済み)
 #   skipped  - 緊急避難口のラベルが付いていた
 #   failed   - リトライ上限まで push できなかった (非ゼロで終了する)
 #
 # 入力 (環境変数):
 #   REF            - push する PR の head ブランチ名
-#   PR / REPO      - ラベル確認用 (どちらか空なら確認しない)
+#   BASE           - マージする PR の base ブランチ名 (空なら PR / REPO から引く。引けなければマージしない)
+#   PR / REPO      - ラベルと base の確認用 (どちらか空なら確認しない)
 #   PUSH_TOKEN     - push に使うトークン。push 直前に extraheader で渡す (空なら既存の認証を使う)
 #   STRUCTURED     - エージェントの structured_output。.summary の 1 行目をコミット件名に使う
 #   BYPASS_LABELS  - push しないラベル (カンマ区切り。既定: hotfix,revert)
@@ -101,20 +103,35 @@ if [ -n "${PUSH_TOKEN:-}" ]; then
   "${GIT_CMD}" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ${basic}"
 fi
 
+BASE="${BASE:-}"
+if [ -z "$BASE" ] && [ -n "${PR:-}" ] && [ -n "${REPO:-}" ]; then
+  BASE="$("${GH_CMD}" pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+  [ -n "$BASE" ] || echo "::warning::could not look up the base branch of #${PR}; pushing without merging it."
+fi
+
+# rebase で積み直さないのは、base をマージしたコミットを rebase が平坦化して base のコミットを複製するため。
+# base のマージを自動修正コミットの下に置くのは、CI のコードレビューが head がマージコミットの push を
+# スキップするため。マージコミットは squash merge で消えるので PR の履歴には残らない。
+fix_sha="$("${GIT_CMD}" rev-parse HEAD)"
 attempt=0
 while [ "$attempt" -lt "$MAX_RETRIES" ]; do
   attempt=$((attempt + 1))
   echo "push attempt ${attempt}/${MAX_RETRIES}"
-  "${GIT_CMD}" fetch origin "$REF"
-  if ! "${GIT_CMD}" rebase "origin/${REF}"; then
-    # rebase 進行中の状態が残ると次の実行を壊しうるので、abort の失敗は警告で残す。
-    "${GIT_CMD}" rebase --abort || echo "::warning::rebase --abort failed; the repository may be left mid-rebase."
-    finish conflict "Rebase onto origin/${REF} conflicted; leaving the fix to a human."
+  "${GIT_CMD}" fetch origin "$REF" ${BASE:+"$BASE"}
+  "${GIT_CMD}" checkout -q --detach "origin/${REF}"
+  # 進行中の状態が残ると次の実行を壊しうるので、abort の失敗は警告で残す。
+  if [ -n "$BASE" ] && ! "${GIT_CMD}" merge --no-edit -m "Merge ${BASE} into ${REF}" "origin/${BASE}"; then
+    "${GIT_CMD}" merge --abort || echo "::warning::merge --abort failed; the repository may be left mid-merge."
+    finish conflict "Merging origin/${BASE} into origin/${REF} conflicted; leaving the fix to a human."
+  fi
+  if ! "${GIT_CMD}" cherry-pick "$fix_sha"; then
+    "${GIT_CMD}" cherry-pick --abort || echo "::warning::cherry-pick --abort failed; the repository may be left mid-cherry-pick."
+    finish conflict "Applying ${COMMIT_PREFIX} onto origin/${REF} conflicted; leaving the fix to a human."
   fi
   if "${GIT_CMD}" push origin "HEAD:${REF}"; then
     finish pushed "Pushed ${COMMIT_PREFIX} to ${REF}."
   fi
-  echo "push rejected (remote advanced); retrying after rebase."
+  echo "push rejected (remote advanced); retrying from fetch."
 done
 
 echo "result=failed" >> "$GITHUB_OUTPUT"

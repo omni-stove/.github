@@ -1,7 +1,8 @@
 name: Push Agent Fix
 description: |
-  エージェントが編集した内容を 1 つの自動修正コミットにまとめ、最新の PR head に rebase して push する。
-  緊急避難口のラベルが付いていたら push しない。rebase がコンフリクトしたら積まずに result=conflict を返す。
+  エージェントが編集した内容を 1 つの自動修正コミットにまとめ、最新の PR head に最新の base をマージした上へ
+  積み直して push する。緊急避難口のラベルが付いていたら push しない。マージか積み直しがコンフリクトしたら
+  積まずに result=conflict を返す。
   ロジックとテストは push-agent-fix.sh / push-agent-fix.bats を参照。
 
 inputs:
@@ -9,8 +10,12 @@ inputs:
     description: push する PR の head ブランチ名
     required: true
   pr-number:
-    description: PR 番号 (ラベルの確認に使う)
+    description: PR 番号 (ラベルと base の確認に使う)
     required: true
+  base:
+    description: マージする PR の base ブランチ名 (空なら PR から引く)
+    required: false
+    default: ""
   structured:
     description: エージェントの structured_output (JSON 文字列)。.summary をコミット件名に使う
     required: false
@@ -52,6 +57,7 @@ runs:
         REPO: ${{ github.repository }}
         PR: ${{ inputs.pr-number }}
         REF: ${{ inputs.ref }}
+        BASE: ${{ inputs.base }}
         STRUCTURED: ${{ inputs.structured }}
         GIT_USER_NAME: ${{ inputs.git-user-name }}
         GIT_USER_EMAIL: ${{ inputs.git-user-email }}
