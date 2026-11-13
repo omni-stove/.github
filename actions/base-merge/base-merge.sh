@@ -61,6 +61,11 @@ start() {
   "${GIT_CMD}" rev-parse --verify -q "origin/${BASE}" >/dev/null \
     || finish failed "::warning::origin/${BASE} is not fetched; not merging it before the fix."
 
+  # head が base を含むと merge は MERGE_HEAD を作らずに成功し、続く merge --abort が失敗する。
+  if "${GIT_CMD}" merge-base --is-ancestor "origin/${BASE}" HEAD; then
+    finish clean "HEAD already contains origin/${BASE}."
+  fi
+
   "${GIT_CMD}" config user.name "$GIT_USER_NAME"
   "${GIT_CMD}" config user.email "$GIT_USER_EMAIL"
   if "${GIT_CMD}" merge --no-commit --no-ff "origin/${BASE}"; then

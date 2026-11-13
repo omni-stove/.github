@@ -50,6 +50,15 @@ output_value() {
   ! git rev-parse -q --verify MERGE_HEAD
 }
 
+@test "start reports clean when the head already contains the base" {
+  head="$(git rev-parse HEAD)"
+  MODE=start run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=clean' "$GITHUB_OUTPUT"
+  [ "$(git rev-parse HEAD)" = "$head" ]
+  [ -z "$(git status --porcelain)" ]
+}
+
 @test "start leaves conflict markers without a merge in progress" {
   base_commit app.txt 'a\nbase\nc\n'
   MODE=start run bash "$SCRIPT"
