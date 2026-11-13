@@ -3,7 +3,8 @@ description: |
   エージェントが編集した内容を 1 つの自動修正コミットにまとめ、最新の PR head に最新の base をマージした上へ
   積み直して push する。base とのコンフリクトを解消したマージコミットがあれば、その上に積む。
   緊急避難口のラベルが付いていたら push しない。マージか積み直しがコンフリクトしたら
-  積まずに result=conflict を返す。
+  積まずに result=conflict を返す。on-base-conflict=skip なら base のマージのコンフリクトだけは
+  base をマージせずに積む。
   ロジックとテストは push-agent-fix.sh / push-agent-fix.bats を参照。
 
 inputs:
@@ -21,6 +22,10 @@ inputs:
     description: actions/base-merge が base とのコンフリクトを解消したマージコミット (先に取り込み、修正が無くても push する)
     required: false
     default: ""
+  on-base-conflict:
+    description: base のマージがコンフリクトしたとき abort (result=conflict) か skip (base をマージせず head に積む)
+    required: false
+    default: abort
   structured:
     description: エージェントの structured_output (JSON 文字列)。.summary をコミット件名に使う
     required: false
@@ -64,6 +69,7 @@ runs:
         REF: ${{ inputs.ref }}
         BASE: ${{ inputs.base }}
         RESOLVED_MERGE: ${{ inputs.resolved-merge }}
+        ON_BASE_CONFLICT: ${{ inputs.on-base-conflict }}
         STRUCTURED: ${{ inputs.structured }}
         GIT_USER_NAME: ${{ inputs.git-user-name }}
         GIT_USER_EMAIL: ${{ inputs.git-user-email }}

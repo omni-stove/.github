@@ -85,6 +85,34 @@ teardown() {
   ! grep -q '^push' "$CALLS"
 }
 
+@test "ON_BASE_CONFLICT=skip applies the fix onto the head without the base when merging it conflicts" {
+  : > "${ROOT}/merge-fail"
+  BASE=main ON_BASE_CONFLICT=skip run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=pushed' "$GITHUB_OUTPUT"
+  [ "$(grep -E '^(checkout -q --detach|merge|cherry-pick|push)' "$CALLS")" = "$(printf '%s\n' \
+    'checkout -q --detach origin/feature/x' \
+    'merge --no-edit -m Merge main into feature/x origin/main' \
+    'merge --abort' \
+    'cherry-pick fixsha' \
+    'push origin HEAD:feature/x')" ]
+}
+
+@test "ON_BASE_CONFLICT=skip still reports a conflict when applying the fix conflicts" {
+  : > "${ROOT}/merge-fail"
+  : > "${ROOT}/cherry-pick-fail"
+  BASE=main ON_BASE_CONFLICT=skip run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=conflict' "$GITHUB_OUTPUT"
+  ! grep -q '^push' "$CALLS"
+}
+
+@test "rejects an unknown ON_BASE_CONFLICT" {
+  ON_BASE_CONFLICT=ignore run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  ! grep -q '^push' "$CALLS"
+}
+
 @test "falls back to a default subject without a summary" {
   STRUCTURED='broken' run bash "$SCRIPT"
   grep -qxF 'commit --no-verify -m [agent-fix] address CI failures and review comments' "$CALLS"

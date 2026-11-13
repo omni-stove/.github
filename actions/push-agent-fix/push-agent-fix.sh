@@ -7,6 +7,7 @@
 # 実行中に作成者が push してリモートが進んでいても取りこぼさず、push 後の CI は最新の base に対して走る。
 # push が reject されたら (さらに別の push が入った) fetch から再試行する。
 # マージか積み直しがコンフリクトしたら積まずに人間に委ねる。
+# ON_BASE_CONFLICT=skip なら、base のマージだけがコンフリクトしたときは base をマージせず最新の head に積む。
 # actions/base-merge でエージェントが base とのコンフリクトを解消したマージコミット (RESOLVED_MERGE) があれば、
 # 最新の head にそれを先にマージしてから base をマージする。その上に積む自動修正の変更が無くても push する。
 #
@@ -19,7 +20,8 @@
 # 出力 (GITHUB_OUTPUT の result):
 #   pushed   - commit して push した
 #   noop     - 作業ツリーに変更が無く、RESOLVED_MERGE も無かった
-#   conflict - RESOLVED_MERGE か base のマージか自動修正コミットの積み直しがコンフリクトした (abort 済み)
+#   conflict - RESOLVED_MERGE か base のマージ (ON_BASE_CONFLICT=abort のとき) か自動修正コミットの積み直しが
+#              コンフリクトした (abort 済み)
 #   skipped  - 緊急避難口のラベルが付いていた
 #   failed   - リトライ上限まで push できなかった (非ゼロで終了する)
 #
@@ -27,6 +29,7 @@
 #   REF            - push する PR の head ブランチ名
 #   BASE           - マージする PR の base ブランチ名 (空なら PR / REPO から引く。引けなければマージしない)
 #   RESOLVED_MERGE - base とのコンフリクトを解消したマージコミット (HEAD の祖先。空なら無し)
+#   ON_BASE_CONFLICT - base のマージがコンフリクトしたとき abort (conflict で終える) か skip (base 無しで積む)。既定: abort
 #   PR / REPO      - ラベルと base の確認用 (どちらか空なら確認しない)
 #   PUSH_TOKEN     - push に使うトークン。push 直前に extraheader で渡す (空なら既存の認証を使う)
 #   STRUCTURED     - エージェントの structured_output。.summary の 1 行目をコミット件名に使う
@@ -46,6 +49,11 @@ GH_CMD="${GH_CMD:-gh}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 BYPASS_LABELS="${BYPASS_LABELS:-hotfix,revert}"
 COMMIT_PREFIX="${COMMIT_PREFIX:-[agent-fix]}"
+ON_BASE_CONFLICT="${ON_BASE_CONFLICT:-abort}"
+case "$ON_BASE_CONFLICT" in
+  abort | skip) ;;
+  *) echo "::error::ON_BASE_CONFLICT must be abort or skip: ${ON_BASE_CONFLICT}"; exit 1 ;;
+esac
 GIT_USER_NAME="${GIT_USER_NAME:-github-actions[bot]}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
 
@@ -133,7 +141,8 @@ while [ "$attempt" -lt "$MAX_RETRIES" ]; do
   fi
   if [ -n "$BASE" ] && ! "${GIT_CMD}" merge --no-edit -m "Merge ${BASE} into ${REF}" "origin/${BASE}"; then
     "${GIT_CMD}" merge --abort || echo "::warning::merge --abort failed; the repository may be left mid-merge."
-    finish conflict "Merging origin/${BASE} into origin/${REF} conflicted; leaving the fix to a human."
+    [ "$ON_BASE_CONFLICT" = skip ] || finish conflict "Merging origin/${BASE} into origin/${REF} conflicted; leaving the fix to a human."
+    echo "Merging origin/${BASE} into origin/${REF} conflicted; applying ${COMMIT_PREFIX} without the base."
   fi
   if [ -n "$fix_sha" ] && ! "${GIT_CMD}" cherry-pick "$fix_sha"; then
     "${GIT_CMD}" cherry-pick --abort || echo "::warning::cherry-pick --abort failed; the repository may be left mid-cherry-pick."

@@ -233,7 +233,8 @@ jobs:
           private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
 
       # patch は lint / test が checkout した github.sha (base とのマージコミット) から作られているので同じものに当てる。
-      # push-agent-fix がそれを 1 コミットにして、最新の base をマージした最新の head に積み直す。
+      # push-agent-fix がそれを 1 コミットにして、最新の base をマージした最新の head に積み直す
+      # (base のマージがコンフリクトしたら base 無しの最新の head に積む)。
       - name: Checkout for the regeneration
         if: steps.regen-token.outcome == 'success'
         continue-on-error: true

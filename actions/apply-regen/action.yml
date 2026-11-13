@@ -3,7 +3,9 @@ description: |
   actions/regen-diff が上げた patch を当て、作り直しのコミットとして PR の head に push する。ci-gate.yml が、
   その run の github.sha を checkout した作業ツリーで呼ぶ。PR のコードは実行しない (git apply と commit / push だけ)。
   head がすでに作り直しのコミットなのにまた差分が出たら (生成が決定的でない) push しない。
-  push は actions/push-agent-fix に任せる (最新の base をマージした最新の head に積み直す)。
+  push は actions/push-agent-fix に任せる (最新の base をマージした最新の head に積み直す)。base のマージが
+  コンフリクトしたら base をマージせず最新の head に積む。作り直しは base とのコンフリクトと関係なく
+  head に積めることが多く、base を待つと PR の作成者がコンフリクトを解消するまで生成物が欠けたままになるため。
   当て方とテストは apply-regen.sh / apply-regen.bats を参照。
 
 inputs:
@@ -62,3 +64,4 @@ runs:
         git-user-name: ${{ inputs.git-user-name }}
         git-user-email: ${{ inputs.git-user-email }}
         commit-prefix: ${{ inputs.commit-prefix }}
+        on-base-conflict: skip
