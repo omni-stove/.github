@@ -17,6 +17,7 @@ setup() {
 printf '%s\n' "\$*" >> "${CALLS}"
 case "\$1" in
   diff) [ "\$(cat "${ROOT}/staged")" = "0" ] ;;
+  cat-file) grep -qxF "\${3#HEAD:}" "${ROOT}/head-paths" 2>/dev/null ;;
   rev-parse) echo "${ROOT}/gitdir" ;;
   rebase) [ "\$2" = "--abort" ] || [ ! -f "${ROOT}/rebase-fail" ] ;;
   push)
@@ -34,6 +35,9 @@ cat "${ROOT}/labels" 2>/dev/null
 STUB
   chmod +x "$GH_CMD"
   export REF=feature/x
+  # スクリプトは作業ツリーのパスを消すので、リポジトリの外で走らせる。
+  mkdir -p "${ROOT}/work"
+  cd "${ROOT}/work"
   SCRIPT="${BATS_TEST_DIRNAME}/push-agent-fix.sh"
 }
 
@@ -103,4 +107,20 @@ teardown() {
   expected="$(printf 'x-access-token:tok' | base64)"
   grep -qxF "config --local http.https://github.com/.extraheader AUTHORIZATION: basic ${expected}" "$CALLS"
   [ "$(grep -n 'extraheader' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^push' "$CALLS" | cut -d: -f1)" ]
+}
+
+@test "puts the config claude-code-action restored from base back to HEAD before staging" {
+  printf '%s\n' .claude CLAUDE.md > "${ROOT}/head-paths"
+  mkdir -p .claude/agents .husky
+  : > .claude/agents/from-base.md
+  : > CLAUDE.md
+  : > .mcp.json
+  : > .husky/pre-commit
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -e .claude ] && [ ! -e CLAUDE.md ] && [ ! -e .mcp.json ] && [ ! -e .husky ]
+  grep -qxF 'checkout HEAD -- .claude' "$CALLS"
+  grep -qxF 'checkout HEAD -- CLAUDE.md' "$CALLS"
+  ! grep -qxF 'checkout HEAD -- .mcp.json' "$CALLS"
+  [ "$(grep -n '^checkout HEAD -- CLAUDE.md' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^add -A' "$CALLS" | cut -d: -f1)" ]
 }

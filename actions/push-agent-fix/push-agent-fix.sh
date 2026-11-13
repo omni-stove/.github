@@ -10,6 +10,9 @@
 # エージェントの実行中に緊急避難口のラベルが付くと、ラベル付与時の run キャンセルをすり抜けて
 # ここに到達しうるので、commit の前にラベルを確認して何もしない。
 #
+# claude-code-action が PR の base から戻した設定 (RESTORED_CONFIG_PATHS) は、commit の前に HEAD の
+# 内容に戻す。エージェントがこれらに加えた編集も捨てる。
+#
 # 出力 (GITHUB_OUTPUT の result):
 #   pushed   - commit して push した
 #   noop     - 作業ツリーに変更が無かった
@@ -57,6 +60,18 @@ if [ -n "${PR:-}" ] && [ -n "${REPO:-}" ]; then
     fi
   done <<<"$(printf '%s' "$BYPASS_LABELS" | tr ',' '\n')"
 fi
+
+# claude-code-action は PR の head を信用せず、起動時に読む設定を base の内容で作業ツリーに上書きして
+# そのまま残す。add -A でそれを積むと、これらを変える PR が自動修正のたびに base へ巻き戻される。
+# 一覧は claude-code-action の SENSITIVE_PATHS (src/github/operations/restore-config.ts) と揃える。
+# base にだけあるファイルが残らないよう、checkout の前に消す。
+RESTORED_CONFIG_PATHS=(.claude .mcp.json .claude.json .gitmodules .ripgreprc CLAUDE.md CLAUDE.local.md .husky)
+for path in "${RESTORED_CONFIG_PATHS[@]}"; do
+  rm -rf -- "$path"
+  if "${GIT_CMD}" cat-file -e "HEAD:${path}" 2>/dev/null; then
+    "${GIT_CMD}" checkout HEAD -- "$path"
+  fi
+done
 
 "${GIT_CMD}" add -A
 if "${GIT_CMD}" diff --cached --quiet; then
