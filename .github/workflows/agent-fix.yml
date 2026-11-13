@@ -7,13 +7,8 @@ name: Agent Fix
 # PR の背景・未解決のレビュー指摘とコードだけで、push 後に走る次の CI が修正の検証になる。
 # commit / base のマージ / push / コメント投稿は決定論的に step が行う。
 #
-# CI が lockfile / 生成物の不一致で落ちていたら、エージェントより先に regen-command で作り直す。
-# 生成物のずれはコマンドで決定的に直るのでエージェントに直させない。
-#   - 未解決のレビュー指摘が無ければ regen ジョブが作り直し、差分が出たらそれだけを push してエージェントを
-#     起動しない。作り直しだけで済んだかはログからは分からないので、次の CI に確かめさせる。残りの失敗が
-#     あれば、次の回は作り直しても差分が出ないか不一致がログから消えるので、エージェントに回る。
-#   - レビュー指摘があれば、どのみちエージェントが要るので fix ジョブの中で作り直してからエージェントを
-#     起動し、両方を 1 コミットで積む。
+# lockfile / 生成物はエージェントに作り直させない。CI の lint / test などのジョブが actions/regen-diff で作り直し、
+# CI Gate がその差分を積む (ci-gate.yml)。その run では自動修正を起動しないので、ここには届かない。
 #
 # push は agent App のトークンで行う。github.token の push では次の CI が起動しないため。
 # 自動修正コミットが人間のコミットを挟まず max-consecutive 回続いたら止めて PR で知らせる。
@@ -74,11 +69,11 @@ on:
         type: string
         default: "3"
       regen-command:
-        description: エージェントが package.json 等を変えたか、CI が lockfile / 生成物の不一致で落ちたときに作り直すコマンド。素の runner で走るので、要るツールの用意 (corepack enable など) も含める。対象ファイルの一覧のパスを REGEN_FILES で受け取る。空なら作り直さない
+        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ (作り直しは CI の actions/regen-diff が担う)
         type: string
         default: ""
       node-version:
-        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ (ツールの用意は regen-command に含める)
+        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ
         type: string
         default: "24"
     secrets:
@@ -99,91 +94,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # 作り直しは PR のコードを実行する。エージェントと同じジョブで先に走らせると、作り直しが残した常駐プロセスが
-  # エージェントのステップの環境変数 (LLM の認証情報) を読めるので、エージェントを起動しない経路はランナーを分ける。
-  regen:
-    name: Regenerate Only
-    if: inputs.trigger == 'ci' && inputs.regen-command != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      PUSHED_SUMMARY: '{"summary":"lockfile / 生成物を作り直す\n\nCI が lockfile / 生成物の不一致で落ちていたため regen-command で作り直し、エージェントは起動せずその差分だけを積んだ。","replies":[]}'
-    outputs:
-      # 作り直しを試したら 'true'。fix ジョブはもう一度作り直さない。
-      attempted: ${{ steps.regen.outputs.needs-regen == 'true' }}
-      # エージェントを起動しなくてよいときに 'true' (push した / コンフリクトを知らせた / 緊急避難口のラベル)。
-      handled: ${{ contains(fromJSON('["pushed","conflict","skipped"]'), steps.push.outputs.result) }}
-    steps:
-      - name: Generate agent App token
-        id: app
-        uses: omni-stove/.github/actions/github-app-token@main
-        with:
-          app-id: ${{ secrets.AGENT_GH_APP_ID }}
-          private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
-
-      - name: Checkout PR head
-        uses: actions/checkout@v6
-        with:
-          # push 前の base のマージに共通祖先が要り、ループ防止は base のマージコミットを挟んで遡るため全履歴を取る。
-          fetch-depth: 0
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-
-      - name: Collect fix context
-        id: context
-        uses: omni-stove/.github/actions/fix-context@main
-        with:
-          pr-number: ${{ inputs.pr-number }}
-          trigger: ${{ inputs.trigger }}
-          fix-review-comments: ${{ inputs.fix-review-comments }}
-          workflow-run-id: ${{ inputs.workflow-run-id }}
-          bot-login: ${{ steps.app.outputs.app-slug }}
-          max-consecutive: ${{ inputs.max-consecutive }}
-          github-token: ${{ steps.app.outputs.token }}
-
-      - name: Regenerate lockfile and generated outputs
-        id: regen
-        if: >-
-          steps.context.outputs.skip != 'true'
-          && steps.context.outputs.run == 'true'
-          && steps.context.outputs.review-comments == ''
-        continue-on-error: true
-        uses: omni-stove/.github/actions/agent-regen@main
-        with:
-          ci-failure: ${{ steps.context.outputs.ci-failure }}
-          pr-number: ${{ inputs.pr-number }}
-          github-token: ${{ steps.app.outputs.token }}
-          command: ${{ inputs.regen-command }}
-
-      # 途中で落ちた作り直しの残骸は push せず、エージェントに回す。
-      - name: Commit and push the regeneration
-        id: push
-        if: steps.regen.outputs.needs-regen == 'true' && steps.regen.outcome == 'success'
-        uses: omni-stove/.github/actions/push-agent-fix@main
-        with:
-          ref: ${{ inputs.ref }}
-          pr-number: ${{ inputs.pr-number }}
-          structured: ${{ env.PUSHED_SUMMARY }}
-          github-token: ${{ steps.app.outputs.token }}
-          git-user-name: ${{ steps.app.outputs.bot-login }}
-          git-user-email: ${{ format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) }}
-
-      # noop (差分なし) と failed は fix ジョブのエージェントに回り、そちらが結果を残す。
-      - name: Post regeneration result
-        if: steps.push.outputs.result == 'pushed' || steps.push.outputs.result == 'conflict'
-        uses: omni-stove/.github/actions/post-fix-result@main
-        with:
-          pr-number: ${{ inputs.pr-number }}
-          result: ${{ steps.push.outputs.result }}
-          structured: ${{ steps.push.outputs.result == 'pushed' && env.PUSHED_SUMMARY || '{"summary":"lockfile / 生成物を作り直したが push できなかったため、エージェントも起動していない。"}' }}
-          ref: ${{ inputs.ref }}
-          github-token: ${{ steps.app.outputs.token }}
-
   fix:
     name: Agent Fix
-    needs: regen
-    # regen が skipped / failure でもエージェントに回す。
-    if: ${{ !cancelled() && needs.regen.outputs.handled != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # permissions を書かず呼び出し側のものを引き継ぐ (失敗ログの取得に actions: read、コメントに
@@ -203,7 +115,7 @@ jobs:
           # push 前の base のマージに共通祖先が要り、ループ防止は base のマージコミットを挟んで遡るため全履歴を取る。
           fetch-depth: 0
           ref: ${{ inputs.ref }}
-          # 作り直し (regen-command) が PR のコードを実行するため、書き込みトークンを .git/config に残さない。
+          # エージェントが作業ツリーの .git/config から書き込みトークンを読めないよう残さない。push は push-agent-fix が渡す。
           persist-credentials: false
 
       - name: Collect fix context
@@ -217,43 +129,6 @@ jobs:
           bot-login: ${{ steps.app.outputs.app-slug }}
           max-consecutive: ${{ inputs.max-consecutive }}
           github-token: ${{ steps.app.outputs.token }}
-
-      # 失敗ログで判定するので、structured は渡さない。regen ジョブが作り直しを試していたら、同じ結果になるので繰り返さない。
-      - name: Regenerate before the agent
-        id: pre-regen
-        if: >-
-          steps.context.outputs.skip != 'true'
-          && steps.context.outputs.run == 'true'
-          && inputs.trigger == 'ci'
-          && inputs.regen-command != ''
-          && needs.regen.outputs.attempted != 'true'
-        continue-on-error: true
-        uses: omni-stove/.github/actions/agent-regen@main
-        with:
-          ci-failure: ${{ steps.context.outputs.ci-failure }}
-          pr-number: ${{ inputs.pr-number }}
-          github-token: ${{ steps.app.outputs.token }}
-          command: ${{ inputs.regen-command }}
-
-      # 途中で落ちた作り直しの残骸は push せず捨てて、エージェントに回す。
-      - name: Check regenerated changes
-        id: pre-regen-check
-        if: steps.pre-regen.outputs.needs-regen == 'true'
-        env:
-          PRE_REGEN_OUTCOME: ${{ steps.pre-regen.outcome }}
-        run: |
-          set -euo pipefail
-          if [ "$PRE_REGEN_OUTCOME" != "success" ]; then
-            git reset --hard -q HEAD
-            git clean -fdq
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Run agent fix
         id: agent
@@ -277,7 +152,7 @@ jobs:
           disallowed-tools: "Bash,WebFetch,WebSearch,Task,Agent,Skill"
           permission-profile: workspace-write
           system-prompt: "Always output in Japanese."
-          json-schema: '{"type":"object","description":"テスト・lint を実行していないことや検証していないことには触れない。","required":["summary","replies","blocked_by_external","needs_regen"],"additionalProperties":false,"properties":{"needs_regen":{"type":"boolean","description":"package.json の依存か生成物の生成元を変更した、または lint/test が lockfile か生成物の不一致で落ちているなら true。"},"blocked_by_external":{"type":"boolean","description":"lint/test 失敗の原因が PR の差分外 (既定ブランチや別ブランチ) にあり、この PR では直せないなら true。その失敗は編集せず、原因を summary に書く。判断できないなら false。"},"summary":{"type":"string","description":"したことだけを書く。1 行目はコミット件名になる。見送った指摘はその根拠、修正不要ならその旨を書く。"},"replies":{"type":"array","description":"レビュー指摘ごとの対応内容。該当なしなら空配列。","items":{"type":"object","required":["comment_id","note"],"additionalProperties":false,"properties":{"comment_id":{"type":"integer","description":"返信先。指摘の見出しにある [comment_id=N] の N。"},"note":{"type":"string","description":"その指摘に対して何をしたか。直さなかったならその理由。"}}}}}}'
+          json-schema: '{"type":"object","description":"テスト・lint を実行していないことや検証していないことには触れない。","required":["summary","replies","blocked_by_external"],"additionalProperties":false,"properties":{"blocked_by_external":{"type":"boolean","description":"lint/test 失敗の原因が PR の差分外 (既定ブランチや別ブランチ) にあり、この PR では直せないなら true。その失敗は編集せず、原因を summary に書く。判断できないなら false。"},"summary":{"type":"string","description":"したことだけを書く。1 行目はコミット件名になる。見送った指摘はその根拠、修正不要ならその旨を書く。"},"replies":{"type":"array","description":"レビュー指摘ごとの対応内容。該当なしなら空配列。","items":{"type":"object","required":["comment_id","note"],"additionalProperties":false,"properties":{"comment_id":{"type":"integer","description":"返信先。指摘の見出しにある [comment_id=N] の N。"},"note":{"type":"string","description":"その指摘に対して何をしたか。直さなかったならその理由。"}}}}}}'
           prompt: |
             Fix what is reported below, and nothing else.
 
@@ -290,8 +165,6 @@ jobs:
             Read the AGENTS.md or CLAUDE.md nearest to each file you edit and follow it.
 
             ${{ inputs.instructions }}
-
-            ${{ steps.pre-regen-check.outputs.changed == 'true' && 'Lockfiles and generated outputs have already been regenerated in the working tree, which fixes the failures caused by their mismatch. Fix only the remaining failures.' || '' }}
 
             Fix the root cause with the smallest change that holds, leaving a test's assertions and unrelated code as they are. Leave lockfiles and generated files to their generators.
 
@@ -315,29 +188,14 @@ jobs:
           blocked="$(printf '%s' "$STRUCTURED" | jq -r '.blocked_by_external == true' 2>/dev/null || echo false)"
           echo "give_up=${blocked}" >> "$GITHUB_OUTPUT"
 
-      # エージェントの編集に追従させる。失敗ログは先の作り直しで使い済みなので渡さない。
-      # 失敗しても編集は push する (不整合は次の CI が落として次の fix に回る)。
-      - name: Regenerate lockfile and generated outputs
-        if: steps.agent.outcome == 'success' && steps.external.outputs.give_up != 'true'
-        continue-on-error: true
-        uses: omni-stove/.github/actions/agent-regen@main
-        with:
-          structured: ${{ steps.agent.outputs.structured-output }}
-          pr-number: ${{ inputs.pr-number }}
-          github-token: ${{ steps.app.outputs.token }}
-          command: ${{ inputs.regen-command }}
-
       - name: Commit and push the fix
         id: push
-        # エージェントが落ちても、先に作り直した分は push する。
-        if: >-
-          steps.external.outputs.give_up != 'true'
-          && (steps.agent.outcome == 'success' || steps.pre-regen-check.outputs.changed == 'true')
+        if: steps.agent.outcome == 'success' && steps.external.outputs.give_up != 'true'
         uses: omni-stove/.github/actions/push-agent-fix@main
         with:
           ref: ${{ inputs.ref }}
           pr-number: ${{ inputs.pr-number }}
-          structured: ${{ steps.agent.outcome == 'success' && steps.agent.outputs.structured-output || '{"summary":"lockfile / 生成物を作り直す\n\n自動修正のエージェントは失敗したため、作り直しだけを積んだ。","replies":[]}' }}
+          structured: ${{ steps.agent.outputs.structured-output }}
           github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ steps.app.outputs.bot-login }}
           git-user-email: ${{ format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) }}

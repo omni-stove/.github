@@ -87,7 +87,7 @@ summary="$(printf '%s' "${STRUCTURED:-}" | jq -er '.summary // ""' 2>/dev/null |
 "${GIT_CMD}" config user.email "$GIT_USER_EMAIL"
 "${GIT_CMD}" commit --no-verify -m "${COMMIT_PREFIX} ${summary}"
 
-# 作り直し (agent-regen) は PR のコードを実行するので、checkout ではトークンを .git/config に残していない。
+# 作業ツリーはエージェントが編集でき、PR のコードでもあるので、checkout ではトークンを .git/config に残していない。
 # トークンを戻す前に、git が外部コマンドを起動する経路 (hook / fsmonitor 等) を潰して読まれないようにする。
 if [ -n "${PUSH_TOKEN:-}" ]; then
   git_dir="$("${GIT_CMD}" rev-parse --git-dir)"

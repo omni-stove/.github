@@ -6,7 +6,7 @@ inputs:
     description: Node.js version
     default: "24"
   frozen-lockfile:
-    description: Use --frozen-lockfile for pnpm install
+    description: Use --frozen-lockfile for pnpm install. false passes --no-frozen-lockfile, so that a mismatched lockfile is regenerated instead of failing (see actions/regen-diff)
     default: "true"
   install-filter:
     description: pnpm --filter value (empty = all packages)
@@ -33,8 +33,11 @@ runs:
       shell: bash
       run: |
         ARGS=""
+        # pnpm defaults to the frozen lockfile in CI, so leaving the flag out would not regenerate it.
         if [ "${{ inputs.frozen-lockfile }}" = "true" ]; then
           ARGS="$ARGS --frozen-lockfile"
+        else
+          ARGS="$ARGS --no-frozen-lockfile"
         fi
         if [ -n "${{ inputs.install-filter }}" ]; then
           ARGS="$ARGS --filter ${{ inputs.install-filter }}"

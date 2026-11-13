@@ -57,7 +57,14 @@ output_value() {
 @test "guard: walks the first parents and skips the base merges" {
   printf '[agent-fix] a\n' > "${ROOT}/log"
   run bash "${DIR}/guard-fix-loop.sh"
-  grep -qx 'log --first-parent --no-merges -n 3 --pretty=%s' "${ROOT}/git-calls"
+  grep -qx 'log --first-parent --no-merges --pretty=%s' "${ROOT}/git-calls"
+}
+
+@test "guard: regeneration commits between fixes neither count nor reset" {
+  printf '[regen] a\n[agent-fix] b\n[regen] c\n[agent-fix] d\n[agent-fix] e\nfeat: f\n' > "${ROOT}/log"
+  run bash "${DIR}/guard-fix-loop.sh"
+  grep -qx 'count=3' "$GITHUB_OUTPUT"
+  grep -qx 'skip=true' "$GITHUB_OUTPUT"
 }
 
 @test "guard: skip=true at the limit" {

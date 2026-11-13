@@ -504,14 +504,14 @@ YAML
   [[ "$output" != *"git commit"* ]]
 }
 
-@test "--issue-worker writes issue-worker.yml with the provider and the pnpm regen command, creates its labels and asks for the agent App" {
+@test "--issue-worker writes issue-worker.yml with the provider, creates its labels and asks for the agent App" {
   run bash "$SCRIPT" --issue-worker --provider codex --ref v1
   [ "$status" -eq 0 ]
   [[ "$output" == *"created	.github/workflows/issue-worker.yml"* ]]
   grep -qx "    uses: omni-stove/.github/.github/workflows/issue-worker.yml@v1" .github/workflows/issue-worker.yml
   grep -qxF "    types: [labeled]" .github/workflows/issue-worker.yml
   grep -qx "      provider: \"codex\"" .github/workflows/issue-worker.yml
-  grep -qx "      regen-command: 'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/issue-worker.yml
+  ! grep -q "regen-command" .github/workflows/issue-worker.yml
   ! grep -q "allowed-bots" .github/workflows/issue-worker.yml
   grep -qx "    secrets: inherit" .github/workflows/issue-worker.yml
   ! grep -q '^$' <(sed -n '/with:/,/secrets: inherit/p' .github/workflows/issue-worker.yml)
@@ -526,11 +526,9 @@ YAML
   [[ "$output" != *"REVIEWER_GH_APP_ID"* ]]
 }
 
-@test "--issue-worker leaves regen-command out without pnpm-lock.yaml and disallows bots on a public repo" {
-  rm pnpm-lock.yaml
+@test "--issue-worker disallows bots on a public repo" {
   GH_VISIBILITY=PUBLIC run bash "$SCRIPT" --issue-worker
   [ "$status" -eq 0 ]
-  ! grep -q "regen-command" .github/workflows/issue-worker.yml
   grep -q '^      allowed-bots: ""' .github/workflows/issue-worker.yml
   grep -qx "      provider: \"claude\"" .github/workflows/issue-worker.yml
 }
@@ -567,9 +565,7 @@ YAML
 
 @test "an existing issue-worker.yml is updated without --issue-worker, keeping edited with: values" {
   bash "$SCRIPT" --issue-worker >/dev/null
-  # 編集された regen-command を、agent-regen が pnpm を用意していた頃の書き方 (corepack なし) にする。
   sed -i.bak \
-    -e "s|regen-command: 'corepack enable \&\& pnpm install --lockfile-only --no-frozen-lockfile'|regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile \&\& pnpm generate'|" \
     -e 's|^    with:$|    with:\n      instructions: "apps/web の規約に従う"|' \
     .github/workflows/issue-worker.yml
   rm .github/workflows/issue-worker.yml.bak
@@ -577,11 +573,7 @@ YAML
   [ "$status" -eq 0 ]
   [[ "$output" == *"updated	.github/workflows/issue-worker.yml"* ]]
   grep -qx "    uses: omni-stove/.github/.github/workflows/issue-worker.yml@v2" .github/workflows/issue-worker.yml
-  grep -qx "      regen-command: 'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile && pnpm generate'" .github/workflows/issue-worker.yml
   grep -qx '      instructions: "apps/web の規約に従う"' .github/workflows/issue-worker.yml
-  bash "$SCRIPT" >/dev/null
-  [ "$(grep -c 'corepack enable' .github/workflows/issue-worker.yml)" -eq 1 ]
-  ! grep -q 'corepack enable && corepack enable' .github/workflows/issue-worker.yml
   [[ "$output" == *"secret	AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY"* ]]
   [[ "$output" != *"todo	PR を作る agent 用"* ]]
   run bash "$SCRIPT"
@@ -605,12 +597,12 @@ YAML
   [[ "$output" == *"todo	secrets を置く: CLAUDE_CODE_OAUTH_TOKEN (または ANTHROPIC_API_KEY / OPENAI_API_KEY), AGENT_GH_APP_ID"* ]]
 }
 
-@test "--fix turns on run-fix with actions read, the pnpm regen command, its labels and the agent App" {
+@test "--fix turns on run-fix with actions read, its labels and the agent App" {
   run bash "$SCRIPT" --fix --provider codex
   [ "$status" -eq 0 ]
   grep -qx "      run-fix: true" .github/workflows/ci.yml
   grep -qx "      fix-provider: \"codex\"" .github/workflows/ci.yml
-  grep -qx "      regen-command: 'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/ci.yml
+  ! grep -q "regen-command" .github/workflows/ci.yml
   grep -qx "      actions: read" .github/workflows/ci.yml
   grep -q "label create skip-autofix" "$GH_LOG"
   grep -q "label create force-autofix" "$GH_LOG"
@@ -628,4 +620,50 @@ YAML
   [ "$status" -eq 0 ]
   grep -qx "      run-fix: true" .github/workflows/ci.yml
   grep -qx "      actions: read" .github/workflows/ci.yml
+}
+
+@test "the lint job of a pnpm repo installs unfrozen and hands the lockfile to regen-diff before linting" {
+  run bash "$SCRIPT" --ref v1
+  [ "$status" -eq 0 ]
+  lint="$(sed -n '/^  lint:$/,/^  test:$/p' .github/workflows/ci.yml)"
+  grep -qx "          frozen-lockfile: false" <<<"$lint"
+  grep -qx "        uses: omni-stove/.github/actions/regen-diff@v1" <<<"$lint"
+  grep -qx "          pathspec: pnpm-lock.yaml" <<<"$lint"
+  [ "$(grep -n 'regen-diff' <<<"$lint" | cut -d: -f1)" -lt "$(grep -n "pnpm lint" <<<"$lint" | cut -d: -f1)" ]
+  test="$(sed -n '/^  test:$/,/^  ci:$/p' .github/workflows/ci.yml)"
+  ! grep -q "frozen-lockfile\|regen-diff" <<<"$test"
+  [[ "$output" != *"regen-diff@v1 (pathspec"* ]]
+}
+
+@test "without pnpm-lock.yaml the lint job has no regen-diff" {
+  rm pnpm-lock.yaml
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q "frozen-lockfile\|regen-diff" .github/workflows/ci.yml
+}
+
+@test "a lint job of the repo without regen-diff gets a todo, and is kept as it is" {
+  bash "$SCRIPT" >/dev/null
+  sed -i.bak -e '/frozen-lockfile: false/d' -e '/Hand the regenerated lockfile/,/pathspec: pnpm-lock.yaml/d' .github/workflows/ci.yml
+  rm .github/workflows/ci.yml.bak
+  ! grep -q "regen-diff" .github/workflows/ci.yml
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q "regen-diff" .github/workflows/ci.yml
+  [[ "$output" == *"todo	ci.yml の lint ジョブの Setup pnpm & Node.js に frozen-lockfile: false を足し"* ]]
+}
+
+@test "regen-command is dropped on an update, with a todo only for one that did more than the lockfile" {
+  bash "$SCRIPT" --fix --issue-worker >/dev/null
+  sed -i.bak "s|^    with:$|    with:\n      regen-command: 'corepack enable \&\& pnpm install --lockfile-only --no-frozen-lockfile'|" .github/workflows/issue-worker.yml
+  sed -i.bak "s|^      run-fix: true$|      run-fix: true\n      regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile \&\& pnpm generate'|" .github/workflows/ci.yml
+  rm .github/workflows/*.bak
+  grep -q "regen-command" .github/workflows/issue-worker.yml
+  grep -q "regen-command" .github/workflows/ci.yml
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q "regen-command" .github/workflows/issue-worker.yml
+  ! grep -q "regen-command" .github/workflows/ci.yml
+  [[ "$output" == *"todo	regen-command ('pnpm install --lockfile-only --no-frozen-lockfile && pnpm generate') は使われなくなった"* ]]
+  [ "$(grep -c "regen-command (" <<<"$output")" -eq 1 ]
 }

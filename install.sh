@@ -324,25 +324,18 @@ WORKER_ALLOWED_BOTS="$(pick "$EXISTING_ISSUE_WORKER" allowed-bots "")"
 if [ -z "$WORKER_ALLOWED_BOTS" ] && [ "$VISIBILITY" = "PUBLIC" ]; then
 	WORKER_ALLOWED_BOTS='""  # 公開リポジトリでは外部 App が付けたラベルでも起動してしまうため'
 fi
-# The agent edits without installing, so a pnpm repo regenerates its lockfile before the PR is opened.
-# The command runs on a bare runner (agent-regen installs no tools), so it enables pnpm through corepack itself.
-DEFAULT_REGEN_COMMAND="'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile'"
-# regen-command written before agent-regen stopped setting up pnpm: one that starts with pnpm gets corepack in front.
-regen_command() {
-	local v="$1"
-	case "$v" in
-		"'pnpm "* | '"pnpm '*) v="${v:0:1}corepack enable && ${v:1}" ;;
-	esac
-	[ -n "$v" ] || [ ! -f pnpm-lock.yaml ] || v="$DEFAULT_REGEN_COMMAND"
-	printf '%s' "$v"
-}
-REGEN_COMMAND="$(regen_command "$(pick "$EXISTING_ISSUE_WORKER" regen-command "")")"
-FIX_REGEN_COMMAND=""
 FIX_PROVIDER=""
-if [ "$FIX" = true ]; then
-	FIX_PROVIDER="$(pick "$GATE_SRC" fix-provider "\"${PROVIDER}\"")"
-	FIX_REGEN_COMMAND="$(regen_command "$(pick "$GATE_SRC" regen-command "")")"
-fi
+[ "$FIX" != true ] || FIX_PROVIDER="$(pick "$GATE_SRC" fix-provider "\"${PROVIDER}\"")"
+
+# regen-command (the agent's regeneration) gave way to regen-diff in the CI jobs, which have the tools to regenerate.
+# Its value is dropped on rewrite, so a command that did more than the lockfile is asked to move into a CI job.
+for src in "$EXISTING_ISSUE_WORKER" "$GATE_SRC"; do
+	v="$(pick "$src" regen-command "")"
+	case "$v" in
+		"" | *"pnpm install --lockfile-only --no-frozen-lockfile"[\'\"]) ;;
+		*) todo "regen-command ($v) は使われなくなった。生成のコマンドを、生成に要るツールのある CI のジョブ (lint など) に移し、その直後に ${ORG_REPO}/actions/regen-diff を足す: https://github.com/${ORG_REPO}#lockfile--生成物の作り直し" ;;
+	esac
+done
 # The fix job reads the failed jobs' logs.
 CI_ACTIONS_PERMISSION=""
 [ "$FIX" != true ] || CI_ACTIONS_PERMISSION=$'\n      actions: read'
@@ -397,7 +390,8 @@ EOF
 
 # The CI Gate job, waiting for the space-separated jobs in $1.
 gate_job() {
-	# node-version is listed empty so that the value an earlier install.sh wrote is dropped: ci-gate.yml no longer uses it.
+	# node-version and regen-command are listed empty so that the values an earlier install.sh wrote are dropped:
+	# ci-gate.yml no longer uses them.
 	cat <<EOF
   ${GATE_JOB}:
     needs: [${1// /, }]
@@ -418,13 +412,14 @@ $(with_block "$GATE_SRC" '^(fix|merge)-' \
 	"run-fix=$([ "$FIX" = true ] && echo true)" \
 	"run-merge=$([ "$AUTO_MERGE" = true ] && echo true)" \
 	"fix-provider=${FIX_PROVIDER}" \
-	"regen-command=${FIX_REGEN_COMMAND}" \
+	"regen-command=" \
 	"node-version=")
     secrets: inherit
 EOF
 }
 
 # A pnpm job of the repo named $1 with a timeout of $2 minutes, then a step per name and command pair in the rest.
+# The lint job of a pnpm repo installs without the frozen lockfile and hands the regenerated lockfile to CI Gate.
 # lint_job / test_job write the repo's lint / test jobs only when ci.yml is created or moved from the oldest form.
 repo_step_job() {
 	cat <<EOF
@@ -443,6 +438,16 @@ repo_step_job() {
         with:
           node-version: ${NODE_VERSION_VALUE}
 EOF
+	if [ "$1" = lint ] && [ -f pnpm-lock.yaml ]; then
+		cat <<EOF
+          frozen-lockfile: false
+
+      - name: Hand the regenerated lockfile to CI Gate
+        uses: ${ORG_REPO}/actions/regen-diff@${REF}
+        with:
+          pathspec: pnpm-lock.yaml
+EOF
+	fi
 	shift 2
 	while [ $# -gt 0 ]; do
 		printf '\n      - name: %s\n        run: %s\n' "$1" "$2"
@@ -547,6 +552,10 @@ for script in lint typecheck test; do
 	[[ "$CI_CONTENT" != *"run: $(skip_command "$script")"* ]] \
 		|| todo "package.json に $script script が無い。追加して install.sh を再実行する (ci.yml の run: $(skip_command "$script") が pnpm $script になる)"
 done
+# A lint job written before regen-diff is the repo's own and is not rewritten, so it keeps installing frozen.
+if [ -f pnpm-lock.yaml ] && [[ "$CI_CONTENT" != *"/actions/regen-diff@"* ]]; then
+	todo "ci.yml の lint ジョブの Setup pnpm & Node.js に frozen-lockfile: false を足し、その直後に ${ORG_REPO}/actions/regen-diff@${REF} (pathspec: pnpm-lock.yaml) を足す (無いと lockfile の不一致が作り直されず lint で落ちる)"
+fi
 
 write_file .github/workflows/hotfix-revert-approve.yml <<EOF
 name: Hotfix/Revert Approve
@@ -592,7 +601,7 @@ jobs:
     with:
 $(with_block "$EXISTING_ISSUE_WORKER" "" \
 	"provider=\"${PROVIDER}\"" \
-	"regen-command=${REGEN_COMMAND}" \
+	"regen-command=" \
 	"allowed-bots=${WORKER_ALLOWED_BOTS}")
     secrets: inherit
 EOF

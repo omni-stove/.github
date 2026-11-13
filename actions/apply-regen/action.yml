@@ -1,0 +1,64 @@
+name: Apply Regen
+description: |
+  actions/regen-diff が上げた patch を当て、作り直しのコミットとして PR の head に push する。ci-gate.yml が、
+  その run の github.sha を checkout した作業ツリーで呼ぶ。PR のコードは実行しない (git apply と commit / push だけ)。
+  head がすでに作り直しのコミットなのにまた差分が出たら (生成が決定的でない) push しない。
+  push は actions/push-agent-fix に任せる (最新の base をマージした最新の head に積み直す)。
+  当て方とテストは apply-regen.sh / apply-regen.bats を参照。
+
+inputs:
+  patch-dir:
+    description: download-artifact が patch を落としたディレクトリ
+    required: true
+  ref:
+    description: push する PR の head ブランチ名
+    required: true
+  pr-number:
+    description: PR 番号
+    required: true
+  head-sha:
+    description: PR の head のコミット
+    required: true
+  github-token:
+    description: push に使うトークン。push で CI を起動させるため agent App のトークンを渡す
+    required: true
+  git-user-name:
+    description: コミットの author 名
+    required: true
+  git-user-email:
+    description: コミットの author メール
+    required: true
+  commit-prefix:
+    description: 作り直しのコミットの件名の接頭辞 (actions/fix-context のループ防止と揃える)
+    required: false
+    default: "[regen]"
+
+outputs:
+  result:
+    description: pushed | noop | conflict | skipped | failed (push-agent-fix の結果) か、loop | conflict (当てる前に止めた)
+    value: ${{ steps.push.outputs.result || steps.apply.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Apply patches
+      id: apply
+      shell: bash
+      env:
+        PATCH_DIR: ${{ inputs.patch-dir }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        COMMIT_PREFIX: ${{ inputs.commit-prefix }}
+      run: bash "$GITHUB_ACTION_PATH/apply-regen.sh"
+
+    - name: Commit and push
+      id: push
+      if: steps.apply.outputs.result == 'applied'
+      uses: omni-stove/.github/actions/push-agent-fix@main
+      with:
+        ref: ${{ inputs.ref }}
+        pr-number: ${{ inputs.pr-number }}
+        structured: '{"summary":"lockfile / 生成物を作り直す"}'
+        github-token: ${{ inputs.github-token }}
+        git-user-name: ${{ inputs.git-user-name }}
+        git-user-email: ${{ inputs.git-user-email }}
+        commit-prefix: ${{ inputs.commit-prefix }}

@@ -1,0 +1,48 @@
+name: Regen Diff
+description: |
+  lint / test などのジョブが作り直した lockfile と生成物 (pnpm-lock.yaml、Unity の .meta、Prisma の出力など) の差分を
+  patch にし、artifact "regen-<name>" に上げる。CI Gate (ci-gate.yml) が run の中の patch を集め、PR の head に
+  1 コミットで積んで push し、その run は落とす。push は agent App のトークンで行うので、次の run がその
+  コミットを検証する。
+  作り直しには生成のツール一式 (node_modules、Unity Editor、DB) が要るので、それを既に持つジョブの中で、作り直しの
+  コマンドの直後に呼ぶ。このアクションはトークンを持たず PR のコードも実行しない。
+  - 前のステップが落ちても patch を残すよう、落ちうるステップの後に置くなら if: ${{ !cancelled() }} を付ける。
+  - pathspec はジョブ間で重ねない。同じコミットから作った patch を順に当てるので、重なると衝突する。
+  - matrix のジョブでは name をジョブごとに変える (artifact 名が重なると上書きされる)。
+  差分の取り方とテストは regen-diff.sh / regen-diff.bats を参照。
+
+inputs:
+  pathspec:
+    description: patch にする範囲 (git の pathspec。1 行に 1 つ)。例 "pnpm-lock.yaml"、"*.meta"、"src/generated"
+    required: true
+  name:
+    description: artifact 名の接尾辞 (regen-<name>)。既定はジョブ ID
+    required: false
+    default: ${{ github.job }}
+
+outputs:
+  changed:
+    description: 差分があれば 'true'
+    value: ${{ steps.diff.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Diff regenerated files
+      id: diff
+      shell: bash
+      env:
+        PATHSPEC: ${{ inputs.pathspec }}
+        OUT: ${{ runner.temp }}/regen-${{ inputs.name }}/regen.patch
+      run: bash "$GITHUB_ACTION_PATH/regen-diff.sh"
+
+    # 差分が無くても空の patch で上書きする。失敗したジョブを re-run したとき、前の attempt の patch が残って
+    # CI Gate が積み済みの差分をもう一度積もうとしないように。
+    - name: Upload patch
+      uses: actions/upload-artifact@v4
+      with:
+        name: regen-${{ inputs.name }}
+        path: ${{ runner.temp }}/regen-${{ inputs.name }}/regen.patch
+        overwrite: true
+        retention-days: 1
+        if-no-files-found: error

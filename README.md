@@ -72,7 +72,7 @@ App の Install App → omni-stove → All repositories (または使うリポ�
 
 ### agent App
 
-`issue-worker.yml` など agent が PR を作る workflow と、`ci-gate.yml` の `run-fix` (自動修正) の push と `run-merge` (自動マージ)、`unblock.yml` のラベル付けで
+`issue-worker.yml` など agent が PR を作る workflow と、`ci-gate.yml` の `run-fix` (自動修正) と lockfile / 生成物の作り直しの push、`run-merge` (自動マージ)、`unblock.yml` のラベル付けで
 `github.token` の代わりに使う。App token で作った PR や push では `pull_request` イベントで CI が起動する
 (`github.token` では起動しない)。
 
@@ -95,7 +95,7 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 | `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `ci-gate.yml` (`run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
 | `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
-| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci-gate.yml` (`run-fix` / `run-merge`) / `unblock.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正と自動マージと unblock は無ければ起動しない |
+| `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci-gate.yml` (`run-fix` / `run-merge` / 作り直し) / `unblock.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正と自動マージと unblock は無ければ起動しない。作り直しは無ければ push せずに CI Gate を落とす |
 | `CLOUDFLARE_API_TOKEN` | `deploy-cloudflare-worker.yml` | Cloudflare の API token |
 
 ### ラベルと必須チェック
@@ -115,6 +115,43 @@ install.sh が作る。手で作るときは次のとおり。
 
 自動マージ (`run-merge`、install.sh の `--auto-merge`) は CI Gate が通り approve した PR を agent App のトークンでマージする。
 PR 1 件だけ止めるなら `skip-automerge` を付ける (`prototype` ラベルと draft の PR もマージしない)。
+
+### lockfile / 生成物の作り直し
+
+エージェントは依存を入れずに編集するので、lockfile や生成物 (Unity の `.meta`、Prisma の出力など) は CI が作り直す。
+作り直しに要るツール (`node_modules`、Unity Editor、DB) を持つ利用側のジョブで、作り直しのコマンドの直後に
+`actions/regen-diff` を呼ぶ。差分は patch として artifact に上がり、CI Gate が PR の head に 1 コミット (`[regen] ...`)
+で積んで push し、その run は落とす。push は agent App のトークンで行うので次の run がそのコミットを検証する。
+agent App が無いときや fork の PR では push せずに落とすだけなので、手元で作り直してコミットする。
+
+```yaml
+  lint:
+    steps:
+      - uses: actions/checkout@v6
+      - uses: omni-stove/.github/actions/setup-pnpm-node@main
+        with:
+          frozen-lockfile: false
+      - run: pnpm prisma generate
+      - uses: omni-stove/.github/actions/regen-diff@main
+        with:
+          pathspec: |
+            pnpm-lock.yaml
+            src/generated
+      - run: pnpm lint
+  unity-test:
+    steps:
+      - uses: game-ci/unity-test-runner@v4
+      - uses: omni-stove/.github/actions/regen-diff@main
+        if: ${{ !cancelled() }}
+        with:
+          pathspec: '*.meta'
+```
+
+- 落ちうるステップの後に置くなら `if: ${{ !cancelled() }}` を付ける (前のステップが落ちても差分を残す)。
+- `pathspec` はジョブ間で重ねない。同じコミットから作った patch を順に当てるので、重なると衝突する。
+- matrix のジョブでは `name` をジョブごとに変える。
+- install.sh は pnpm のリポジトリの `lint` ジョブに `pnpm-lock.yaml` の分を書く (新しく作るときだけ。既存の `lint` ジョブには `todo` を出す)。
+- `[regen]` が head なのにまた差分が出たら (生成が実行のたびに違う結果を出す) push しない。
 
 `unblock.yml` (install.sh の `--unblock`) は Issue が閉じたら、それを待っていた sub-issue (blocked by で待ち合わせた
 Worker のラベルの無いもの) に `bug` / `implementation` を付けて Issue Worker に着手させる。`workflow_dispatch` で
