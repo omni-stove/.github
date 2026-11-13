@@ -73,7 +73,7 @@ on:
         type: string
         default: ""
       regen-command:
-        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。空なら作り直さない
+        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。対象ファイルの一覧のパスを REGEN_FILES で受け取る。空なら作り直さない
         type: string
         default: ""
       node-version:

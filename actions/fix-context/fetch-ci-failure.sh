@@ -29,7 +29,7 @@ CONTEXT_BEFORE="${CONTEXT_BEFORE:-6}"
 CONTEXT_AFTER="${CONTEXT_AFTER:-12}"
 MAX_BYTES="${MAX_BYTES:-48000}"
 
-MARKER_RE='FAIL |✗|✕|×|❯|⎯|AssertionError|Hook timed out|expected .* (to|but)|exited \(|ELIFECYCLE|run failed|shutdown signal|operation was canceled|Test Files|Tests .*(passed|failed|skipped)|TS[0-9]{3,}|Cannot find|is not assignable|##\[error\]|exit code [0-9]|failed to download|failed to fetch|ECONNRESET|ENOTFOUND|EAI_AGAIN|ERR_PNPM_OUTDATED_LOCKFILE|^diff --git a/'
+MARKER_RE='FAIL |✗|✕|×|❯|⎯|AssertionError|Hook timed out|expected .* (to|but)|exited \(|ELIFECYCLE|run failed|shutdown signal|operation was canceled|Test Files|Tests .*(passed|failed|skipped)|TS[0-9]{3,}|Cannot find|is not assignable|##\[error\]|exit code [0-9]|failed to download|failed to fetch|ECONNRESET|ENOTFOUND|EAI_AGAIN|ERR_PNPM_OUTDATED_LOCKFILE|(^|Z )diff --git a/'
 # 本命の失敗理由まで巻き添えで消さないよう、明らかなノイズだけに絞る。
 NOISE_RE='DeprecationWarning|node:.*\[DEP|Use .node --trace'
 

@@ -79,7 +79,7 @@ on:
         type: string
         default: "squash"
       regen-command:
-        description: 自動修正が package.json 等を変えたときに lockfile / 生成物を作り直すコマンド
+        description: 自動修正が package.json 等を変えたか、CI が lockfile / 生成物の不一致で落ちたときに作り直すコマンド。対象ファイルの一覧のパスを REGEN_FILES で受け取る
         type: string
         default: ""
       node-version:

@@ -3,8 +3,9 @@
 # actions/agent-regen から呼ばれる。
 #
 # 生成元はリポジトリごとに違いパスで列挙しきれないため、エージェント自身の申告 (構造化出力の
-# needs_regen) を見る。lockfile が要るかは package.json / pnpm-workspace.yaml の変更と、CI が lockfile の
-# 不一致で落ちたことで確実に分かるので、申告に関係なく拾う。
+# needs_regen) を見る。lockfile が要るかは package.json / pnpm-workspace.yaml の変更で確実に分かるので、
+# 申告に関係なく拾う。CI の失敗ログに lockfile の不一致か生成物の差分 (`git diff --exit-code` の出力) が
+# あれば、申告漏れに備えて申告に関係なく作り直す。
 #
 # 入力 (環境変数):
 #   STRUCTURED    - エージェントの structured_output (JSON 文字列)
@@ -25,9 +26,10 @@ needs=false
 if [ "$(printf '%s' "${STRUCTURED:-}" | jq -r '.needs_regen == true' 2>/dev/null || echo false)" = "true" ]; then
   needs=true
   echo "agent reported needs_regen."
-elif printf '%s' "${CI_FAILURE:-}" | grep -q 'ERR_PNPM_OUTDATED_LOCKFILE'; then
+# job ログの各行には実行時刻が前置されるため、行頭だけでなく時刻の直後の diff --git も拾う。
+elif printf '%s\n' "${CI_FAILURE:-}" | grep -qE 'ERR_PNPM_OUTDATED_LOCKFILE|(^|Z )diff --git a/'; then
   needs=true
-  echo "CI failed on an outdated lockfile."
+  echo "CI failed on an outdated lockfile or generated outputs."
 else
   while IFS= read -r f; do
     case "$f" in

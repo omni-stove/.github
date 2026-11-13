@@ -63,3 +63,16 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -qx 'needs_regen=true' "$GITHUB_OUTPUT"
 }
+
+@test "true when the CI failure log shows a generated-output diff" {
+  CI_FAILURE=$'2026-11-13T00:00:00.0000000Z diff --git a/src/generated/api.ts b/src/generated/api.ts\n2026-11-13T00:00:00.0000000Z ##[error]Process completed with exit code 1.' run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'needs_regen=true' "$GITHUB_OUTPUT"
+  [[ "$output" == *"CI failed on an outdated lockfile or generated outputs."* ]]
+}
+
+@test "false when diff --git appears mid-line in an unrelated log" {
+  CI_FAILURE='echo "see diff --git a/x b/x"' run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'needs_regen=false' "$GITHUB_OUTPUT"
+}

@@ -7,6 +7,10 @@ name: Agent Fix
 # PR の背景・未解決のレビュー指摘とコードだけで、push 後に走る次の CI が修正の検証になる。
 # commit / rebase / push / コメント投稿は決定論的に step が行う。
 #
+# CI が lockfile / 生成物の不一致で落ちていたら、エージェントより先に regen-command で作り直す。
+# 生成物のずれはコマンドで決定的に直るのでエージェントに直させず、エージェントには残りの失敗だけを任せる。
+# 作り直しだけで済んだかはログからは分からないため、エージェントは作り直しの後も起動し、両方を 1 コミットで積む。
+#
 # push は agent App のトークンで行う。github.token の push では次の CI が起動しないため。
 # 自動修正コミットが人間のコミットを挟まず max-consecutive 回続いたら止めて PR で知らせる。
 
@@ -66,7 +70,7 @@ on:
         type: string
         default: "3"
       regen-command:
-        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。空なら作り直さない
+        description: エージェントが package.json 等を変えたか、CI が lockfile / 生成物の不一致で落ちたときに作り直すコマンド。対象ファイルの一覧のパスを REGEN_FILES で受け取る。空なら作り直さない
         type: string
         default: ""
       node-version:
@@ -127,6 +131,39 @@ jobs:
           max-consecutive: ${{ inputs.max-consecutive }}
           github-token: ${{ steps.app.outputs.token }}
 
+      # 失敗ログで判定するので、structured は渡さない。
+      - name: Regenerate before the agent
+        id: pre-regen
+        if: steps.context.outputs.skip != 'true' && steps.context.outputs.run == 'true' && inputs.trigger == 'ci' && inputs.regen-command != ''
+        continue-on-error: true
+        uses: omni-stove/.github/actions/agent-regen@main
+        with:
+          ci-failure: ${{ steps.context.outputs.ci-failure }}
+          pr-number: ${{ inputs.pr-number }}
+          github-token: ${{ steps.app.outputs.token }}
+          command: ${{ inputs.regen-command }}
+          node-version: ${{ inputs.node-version }}
+
+      # 途中で落ちた作り直しの残骸は push せず捨てて、エージェントに回す。
+      - name: Check regenerated changes
+        id: pre-regen-check
+        if: steps.pre-regen.outputs.needs-regen == 'true'
+        env:
+          PRE_REGEN_OUTCOME: ${{ steps.pre-regen.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$PRE_REGEN_OUTCOME" != "success" ]; then
+            git reset --hard -q HEAD
+            git clean -fdq
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run agent fix
         id: agent
         if: steps.context.outputs.skip != 'true' && steps.context.outputs.run == 'true'
@@ -163,6 +200,8 @@ jobs:
 
             ${{ inputs.instructions }}
 
+            ${{ steps.pre-regen-check.outputs.changed == 'true' && 'Lockfiles and generated outputs have already been regenerated in the working tree, which fixes the failures caused by their mismatch. Fix only the remaining failures.' || '' }}
+
             Fix the root cause with the smallest change that holds, leaving a test's assertions and unrelated code as they are. Leave lockfiles and generated files to their generators.
 
             A failing lint or test still needs a fix whatever the discussion settled, unless the log shows the runner rather than the code gave way.
@@ -185,6 +224,7 @@ jobs:
           blocked="$(printf '%s' "$STRUCTURED" | jq -r '.blocked_by_external == true' 2>/dev/null || echo false)"
           echo "give_up=${blocked}" >> "$GITHUB_OUTPUT"
 
+      # エージェントの編集に追従させる。失敗ログは先の作り直しで使い済みなので渡さない。
       # 失敗しても編集は push する (不整合は次の CI が落として次の fix に回る)。
       - name: Regenerate lockfile and generated outputs
         if: steps.agent.outcome == 'success' && steps.external.outputs.give_up != 'true'
@@ -192,18 +232,22 @@ jobs:
         uses: omni-stove/.github/actions/agent-regen@main
         with:
           structured: ${{ steps.agent.outputs.structured-output }}
-          ci-failure: ${{ steps.context.outputs.ci-failure }}
+          pr-number: ${{ inputs.pr-number }}
+          github-token: ${{ steps.app.outputs.token }}
           command: ${{ inputs.regen-command }}
           node-version: ${{ inputs.node-version }}
 
       - name: Commit and push the fix
         id: push
-        if: steps.agent.outcome == 'success' && steps.external.outputs.give_up != 'true'
+        # エージェントが落ちても、先に作り直した分は push する。
+        if: >-
+          steps.external.outputs.give_up != 'true'
+          && (steps.agent.outcome == 'success' || steps.pre-regen-check.outputs.changed == 'true')
         uses: omni-stove/.github/actions/push-agent-fix@main
         with:
           ref: ${{ inputs.ref }}
           pr-number: ${{ inputs.pr-number }}
-          structured: ${{ steps.agent.outputs.structured-output }}
+          structured: ${{ steps.agent.outcome == 'success' && steps.agent.outputs.structured-output || '{"summary":"lockfile / 生成物を作り直す\n\n自動修正のエージェントは失敗したため、作り直しだけを積んだ。","replies":[]}' }}
           github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ steps.app.outputs.bot-login }}
           git-user-email: ${{ format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) }}
