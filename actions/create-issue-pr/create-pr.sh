@@ -7,6 +7,7 @@
 #   --label <name>  PR に付けるラベル。複数回指定可。無いラベルは警告して飛ばす
 #   --draft         ドラフト PR として作成する
 #
+# push 前に最新の base へ rebase する。rebase がコンフリクトしたら中断し、rebase せずに push する。
 # 同じブランチが remote に先行していれば (同じ Issue の再実行) マージしてから push し、その
 # ブランチの open PR が既にあれば作らずにその URL を返す。マージがコンフリクトしたら exit 3。
 #
@@ -62,6 +63,18 @@ if [ -n "$(git status --porcelain)" ]; then
   git commit --no-verify -m "$message"
 fi
 
+# エージェントの実行中に base が進んでいると、PR が古い base の上に乗って CI が最新の base と
+# 噛み合わない。ブランチは base から切った直線の履歴なので、rebase してもマージコミットを平坦化しない。
+# コンフリクトは人間が PR 上で解くほうが確実なので、PR を作らずに終えることはしない。
+if git fetch origin "$base"; then
+  if ! git rebase FETCH_HEAD; then
+    git rebase --abort || echo "::warning::rebase --abort failed; the repository may be left mid-rebase." >&2
+    echo "::warning::rebase onto the latest ${base} conflicted; pushing without rebasing." >&2
+  fi
+else
+  echo "::warning::fetching ${base} failed; pushing without rebasing." >&2
+fi
+
 # 同じ Issue の再実行では remote にブランチが残っている。non-fast-forward なら remote 側を
 # マージして push する。rebase にしないのは、ブランチに base のマージコミットが含まれていると
 # rebase がそれを平坦化して base のコミットを複製するため。
@@ -76,6 +89,11 @@ if [ "$pushed" = false ]; then
   if ! git merge --no-edit FETCH_HEAD; then
     echo "==> merge conflict with origin/${branch}; resolve it by hand." >&2
     exit 3
+  fi
+  # CI のコードレビューは head がマージコミットの push をスキップし、レビュー結果を起点とする
+  # 自動修正も走らなくなるため、空コミットを積んで head をマージコミットでなくする。
+  if git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+    git commit --allow-empty --no-verify -m "chore: trigger code review after merge"
   fi
   git push -u origin "$branch"
 fi

@@ -1,6 +1,6 @@
 name: Create Issue PR
 description: |
-  Issue Worker のエージェントが作業ツリーに残した編集を 1 コミットにまとめ、ブランチへ push して
+  Issue Worker のエージェントが作業ツリーに残した編集を 1 コミットにまとめ、最新の base に rebase してブランチへ push して
   PR を作る。PR の文面はエージェントの構造化出力 (message / title / purpose / approach /
   verification / review_points / closes_issue) から取り、変更が無ければ PR を作らず Issue に
   理由をコメントする。ロジックとテストは create-issue-pr.sh / create-pr.sh と各 .bats を参照。

@@ -94,6 +94,26 @@ teardown() {
   grep -q "pr edit https://github.com/o/r/pull/3 --add-label x" "$GH_LOG"
 }
 
+@test "rebases onto the latest base before pushing" {
+  (cd "${ROOT}/seed" && echo newer > base.txt && git add -A \
+    && git -c user.name=seed -c user.email=seed@example.com commit -q -m newer && git push -q origin HEAD:main)
+  echo change > file.txt
+  run bash "$SCRIPT" b main mine t body
+  [ "$status" -eq 0 ]
+  [ "$(git -C "${ROOT}/origin.git" log --format=%s b)" = "$(printf 'mine\nnewer\ninit')" ]
+}
+
+@test "pushes without rebasing when the rebase onto the base conflicts" {
+  (cd "${ROOT}/seed" && echo theirs > file.txt && git add -A \
+    && git -c user.name=seed -c user.email=seed@example.com commit -q -m theirs && git push -q origin HEAD:main)
+  echo mine > file.txt
+  run bash "$SCRIPT" b main mine t body
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::rebase onto the latest main conflicted"* ]]
+  [ ! -d .git/rebase-merge ] && [ ! -d .git/rebase-apply ]
+  [ "$(git -C "${ROOT}/origin.git" log --format=%s b)" = "$(printf 'mine\ninit')" ]
+}
+
 @test "merges a remote branch that is ahead before pushing again" {
   (cd "${ROOT}/seed" && git checkout -q -b b && echo earlier > other.txt && git add -A \
     && git -c user.name=seed -c user.email=seed@example.com commit -q -m earlier && git push -q origin b)
@@ -104,6 +124,8 @@ teardown() {
   [ -f other.txt ]
   git -C "${ROOT}/origin.git" log --format=%s b | grep -qx later
   git -C "${ROOT}/origin.git" log --format=%s b | grep -qx earlier
+  [ "$(git -C "${ROOT}/origin.git" log -1 --format=%s b)" = "chore: trigger code review after merge" ]
+  [ "$(git -C "${ROOT}/origin.git" rev-list --parents -1 b | wc -w)" -eq 2 ]
 }
 
 @test "exits 3 on a merge conflict with the remote branch" {
