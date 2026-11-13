@@ -85,3 +85,17 @@ teardown() {
   [ "$(grep -c '/replies' "$CALLS")" -eq 2 ]
   [[ "$output" == *"posted 0 reply/replies (2 failed)."* ]]
 }
+
+@test "pushed with resolved files lists them before the summary" {
+  STRUCTURED='{"summary":"解消した"}' RESULT=pushed RESOLVED_FILES=$'src/a.ts\nb.md\n' run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q '^pr comment 7 --repo o/r --body base とのコンフリクトを解消した。' "$CALLS"
+  grep -qF -- '- `src/a.ts` - `b.md`' "$CALLS"
+  grep -q '解消した $' "$CALLS"
+}
+
+@test "unresolved upserts the conflict notice and posts the summary" {
+  STRUCTURED='{"summary":"一部だけ"}' RESULT=unresolved REF=feature/x run bash "$SCRIPT"
+  grep -q '<!-- agent-fix-conflict -->.*feature/x.*自動では解消しきれなかった' "$CALLS"
+  grep -q '^pr comment 7 --repo o/r --body 一部だけ' "$CALLS"
+}

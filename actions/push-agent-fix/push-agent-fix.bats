@@ -156,3 +156,35 @@ teardown() {
   ! grep -qxF 'checkout HEAD -- .mcp.json' "$CALLS"
   [ "$(grep -n '^checkout HEAD -- CLAUDE.md' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^add -A' "$CALLS" | cut -d: -f1)" ]
 }
+
+@test "merges the resolved merge before the base and the fix" {
+  RESOLVED_MERGE=mergesha BASE=main run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=pushed' "$GITHUB_OUTPUT"
+  [ "$(grep -E '^(checkout -q --detach|merge|cherry-pick|push)' "$CALLS")" = "$(printf '%s\n' \
+    'checkout -q --detach origin/feature/x' \
+    'merge --no-edit -m Merge main into feature/x mergesha' \
+    'merge --no-edit -m Merge main into feature/x origin/main' \
+    'cherry-pick fixsha' \
+    'push origin HEAD:feature/x')" ]
+}
+
+@test "pushes the resolved merge alone when nothing is staged" {
+  echo 0 > "${ROOT}/staged"
+  RESOLVED_MERGE=mergesha BASE=main run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=pushed' "$GITHUB_OUTPUT"
+  ! grep -q '^commit' "$CALLS"
+  ! grep -q '^cherry-pick' "$CALLS"
+  grep -qxF 'merge --no-edit -m Merge main into feature/x mergesha' "$CALLS"
+  grep -qxF 'push origin HEAD:feature/x' "$CALLS"
+}
+
+@test "conflict on merging the resolved merge aborts it and does not push" {
+  : > "${ROOT}/merge-fail"
+  RESOLVED_MERGE=mergesha run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'result=conflict' "$GITHUB_OUTPUT"
+  grep -qx 'merge --abort' "$CALLS"
+  ! grep -q '^push' "$CALLS"
+}

@@ -6,6 +6,7 @@
 #   skipped  - 緊急避難口のラベルで push を見送ったので何も投稿しない
 #   external - 原因が PR の差分外にあり push を見送ったことと、エージェントの summary を投稿する
 #   conflict - base のマージか積み直しのコンフリクトで push を見送ったことを upsert し、summary も投稿する
+#   unresolved - base とのコンフリクトをエージェントが解消しきれず push を見送ったことを upsert し、summary も投稿する
 #   それ以外 - summary を投稿する。pushed なら指摘ごとの対応 (.replies) を各スレッドへ返信する
 #              (push していないのに「処理済み」の返信だけ残さないため pushed のときだけ)
 # summary が空でも、何が起きたか追えるよう既定文言で 1 件は残す。
@@ -15,6 +16,7 @@
 #   RESULT           - 上の結果 (エージェントが途中で落ちたら空)
 #   STRUCTURED       - エージェントの structured_output。.summary / .replies を使う
 #   REF              - PR の head ブランチ名 (コンフリクト通知の文面に使う)
+#   RESOLVED_FILES   - base とのコンフリクトを解消したパス (1 行 1 件)。pushed のとき summary の前に列挙する
 #   MAX_CONSECUTIVE  - 連続上限 (打ち切り通知の文面に使う)
 #   RATE_LIMITED / RATE_LIMIT_RESET - エージェントが GitHub API のレート制限で落ちたか / 解除時刻 (epoch 秒)
 #   RUN_URL          - この run の URL
@@ -27,6 +29,7 @@ set -euo pipefail
 
 GH_CMD="${GH_CMD:-gh}"
 RESULT="${RESULT:-}"
+RESOLVED_FILES="${RESOLVED_FILES:-}"
 RUN_URL="${RUN_URL:-}"
 run_link=""
 [ -z "$RUN_URL" ] || run_link=$'\n\n'"実行ログ: ${RUN_URL}"
@@ -95,9 +98,16 @@ case "$RESULT" in
   conflict)
     upsert_comment "<!-- agent-fix-conflict -->" "自動修正 (\`[agent-fix]\`) を最新の \`${REF:-head}\` と base に積み直すとコンフリクトしたため、push を見送った。手で直してほしい。${run_link}"
     ;;
+  unresolved)
+    upsert_comment "<!-- agent-fix-conflict -->" "CI の実行中に \`${REF:-head}\` が base とコンフリクトするようになり、自動では解消しきれなかったため push を見送った。手で直してほしい。${run_link}"
+    ;;
 esac
 
 body="$(summary_body)"
+if [ "$RESULT" = "pushed" ] && [ -n "${RESOLVED_FILES//[$' \t\n']/}" ]; then
+  files="$(printf '%s\n' "$RESOLVED_FILES" | sed '/^[[:space:]]*$/d; s/.*/- `&`/')"
+  body="base とのコンフリクトを解消した。"$'\n\n'"${files}"$'\n\n'"${body}"
+fi
 if [ "$RESULT" = "external" ]; then
   body="lint / test の失敗の原因がこの PR の差分外にあるため、自動修正は push しなかった。"$'\n\n'"${body}"
 fi

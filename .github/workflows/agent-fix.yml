@@ -7,6 +7,10 @@ name: Agent Fix
 # PR の背景・未解決のレビュー指摘とコードだけで、push 後に走る次の CI が修正の検証になる。
 # commit / base のマージ / push / コメント投稿は決定論的に step が行う。
 #
+# 修正の前に checkout 済みの base を head にマージし、コンフリクトしたらエージェントにマーカーだけを解消させてマージ
+# コミットにする (actions/base-merge)。修正のエージェントは解消したマージの上で動き、自動修正コミットはその上に積む。
+# 解消を修正と別のエージェントにさせるのは、マージコミットに解消以外を混ぜないため。
+#
 # lockfile / 生成物はエージェントに作り直させない。CI の lint / test などのジョブが actions/regen-diff で作り直し、
 # CI Gate がその差分を積む (ci-gate.yml)。その run では自動修正を起動しないので、ここには届かない。
 #
@@ -130,9 +134,81 @@ jobs:
           max-consecutive: ${{ inputs.max-consecutive }}
           github-token: ${{ steps.app.outputs.token }}
 
+      - name: Merge the base
+        id: merge
+        if: steps.context.outputs.skip != 'true' && steps.context.outputs.run == 'true'
+        uses: omni-stove/.github/actions/base-merge@main
+        with:
+          mode: start
+          pr-number: ${{ inputs.pr-number }}
+          ref: ${{ inputs.ref }}
+          github-token: ${{ steps.app.outputs.token }}
+          git-user-name: ${{ steps.app.outputs.bot-login }}
+          git-user-email: ${{ format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) }}
+
+      - name: Resolve base conflicts
+        id: resolve
+        if: steps.merge.outputs.result == 'conflicted'
+        uses: omni-stove/.github/actions/agent-run@main
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          provider: ${{ inputs.provider }}
+          tier: ${{ inputs.tier }}
+          model: ${{ inputs.model }}
+          effort: ${{ inputs.effort }}
+          allowed-bots: ${{ inputs.allowed-bots }}
+          extra-claude-args: "--max-turns ${{ inputs.max-turns }}"
+          rate-limit-retry-max-wait-seconds: "900"
+          allowed-tools: "Read,Edit,Write,NotebookEdit,Glob,Grep"
+          disallowed-tools: "Bash,WebFetch,WebSearch,Task,Agent,Skill"
+          permission-profile: workspace-write
+          system-prompt: "Always output in Japanese."
+          json-schema: '{"type":"object","required":["summary"],"additionalProperties":false,"properties":{"summary":{"type":"string","description":"ファイルごとに、どちらの変更をどう残したかを書く。1 行目は解消の要約。解消しきれなかったマーカーがあればその場所と理由を書く。"}}}'
+          prompt: |
+            Merging the base branch `${{ steps.merge.outputs.base }}` into this pull request's branch `${{ inputs.ref }}` conflicted.
+            Resolve the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) in these files, and edit nothing else:
+
+            ```
+            ${{ steps.merge.outputs.files }}
+            ```
+
+            In each conflicted hunk, the side marked HEAD is this pull request and the other side is the base.
+            Keep the intent of both: keep the base's changes and reapply this pull request's change on top of them.
+            Where the two cannot both hold, follow the base and say so in `summary`. Delete a file only when the base
+            deleted it and this pull request's change no longer applies.
+
+            ${{ steps.context.outputs.pr-context }}
+
+            Read the AGENTS.md or CLAUDE.md nearest to each file you edit and follow it.
+
+            Do not run tests or try to validate; dependencies are not installed in this job.
+            Edit files and stop there; a later step commits the merge.
+
+      - name: Commit the resolved merge
+        id: resolved
+        if: steps.resolve.outcome == 'success'
+        uses: omni-stove/.github/actions/base-merge@main
+        with:
+          mode: finish
+          base: ${{ steps.merge.outputs.base }}
+          ref: ${{ inputs.ref }}
+          base-sha: ${{ steps.merge.outputs.base-sha }}
+          tree: ${{ steps.merge.outputs.tree }}
+          files: ${{ steps.merge.outputs.files }}
+          git-user-name: ${{ steps.app.outputs.bot-login }}
+          git-user-email: ${{ format('{0}@users.noreply.github.com', steps.app.outputs.bot-login) }}
+
+      # 解消できなかった (しない) コンフリクトの上に直しても push でまたコンフリクトするので、修正のエージェントを走らせない。
       - name: Run agent fix
         id: agent
-        if: steps.context.outputs.skip != 'true' && steps.context.outputs.run == 'true'
+        if: >-
+          steps.context.outputs.skip != 'true' && steps.context.outputs.run == 'true'
+          && (steps.merge.outputs.result != 'conflicted' || steps.resolved.outputs.result == 'resolved')
+          && steps.merge.outputs.result != 'unresolvable'
         uses: omni-stove/.github/actions/agent-run@main
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -177,6 +253,7 @@ jobs:
 
             Do not run tests or try to validate; dependencies are not installed in this job.
             Edit files and stop there; a later step commits, merges the base, pushes, and comments on the PR.
+            ${{ steps.resolved.outputs.result == 'resolved' && 'The base is already merged into the working tree; its conflicts were resolved in an earlier step.' || '' }}
 
       # 直せない失敗に push すると CI → fix が空回りするため、push せず人間に委ねる。
       - name: Check external give-up
@@ -195,6 +272,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           pr-number: ${{ inputs.pr-number }}
+          resolved-merge: ${{ steps.resolved.outputs.merge-sha }}
           structured: ${{ steps.agent.outputs.structured-output }}
           github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ steps.app.outputs.bot-login }}
@@ -209,8 +287,14 @@ jobs:
         uses: omni-stove/.github/actions/post-fix-result@main
         with:
           pr-number: ${{ inputs.pr-number }}
-          result: ${{ steps.context.outputs.skip == 'true' && 'loop' || steps.external.outputs.give_up == 'true' && 'external' || steps.push.outputs.result }}
-          structured: ${{ steps.agent.outputs.structured-output }}
+          result: >-
+            ${{ steps.context.outputs.skip == 'true' && 'loop'
+            || steps.merge.outputs.result == 'conflicted' && steps.resolved.outputs.result != 'resolved' && 'unresolved'
+            || steps.merge.outputs.result == 'unresolvable' && 'unresolved'
+            || steps.external.outputs.give_up == 'true' && 'external'
+            || steps.push.outputs.result }}
+          structured: ${{ steps.agent.outputs.structured-output || steps.resolve.outputs.structured-output }}
+          resolved-files: ${{ steps.push.outputs.result == 'pushed' && steps.merge.outputs.files || '' }}
           ref: ${{ inputs.ref }}
           max-consecutive: ${{ inputs.max-consecutive }}
           rate-limited: ${{ steps.agent.outputs.rate-limited }}

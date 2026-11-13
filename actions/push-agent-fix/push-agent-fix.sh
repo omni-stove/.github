@@ -7,6 +7,8 @@
 # 実行中に作成者が push してリモートが進んでいても取りこぼさず、push 後の CI は最新の base に対して走る。
 # push が reject されたら (さらに別の push が入った) fetch から再試行する。
 # マージか積み直しがコンフリクトしたら積まずに人間に委ねる。
+# actions/base-merge でエージェントが base とのコンフリクトを解消したマージコミット (RESOLVED_MERGE) があれば、
+# 最新の head にそれを先にマージしてから base をマージする。その上に積む自動修正の変更が無くても push する。
 #
 # エージェントの実行中に緊急避難口のラベルが付くと、ラベル付与時の run キャンセルをすり抜けて
 # ここに到達しうるので、commit の前にラベルを確認して何もしない。
@@ -16,14 +18,15 @@
 #
 # 出力 (GITHUB_OUTPUT の result):
 #   pushed   - commit して push した
-#   noop     - 作業ツリーに変更が無かった
-#   conflict - base のマージか自動修正コミットの積み直しがコンフリクトした (abort 済み)
+#   noop     - 作業ツリーに変更が無く、RESOLVED_MERGE も無かった
+#   conflict - RESOLVED_MERGE か base のマージか自動修正コミットの積み直しがコンフリクトした (abort 済み)
 #   skipped  - 緊急避難口のラベルが付いていた
 #   failed   - リトライ上限まで push できなかった (非ゼロで終了する)
 #
 # 入力 (環境変数):
 #   REF            - push する PR の head ブランチ名
 #   BASE           - マージする PR の base ブランチ名 (空なら PR / REPO から引く。引けなければマージしない)
+#   RESOLVED_MERGE - base とのコンフリクトを解消したマージコミット (HEAD の祖先。空なら無し)
 #   PR / REPO      - ラベルと base の確認用 (どちらか空なら確認しない)
 #   PUSH_TOKEN     - push に使うトークン。push 直前に extraheader で渡す (空なら既存の認証を使う)
 #   STRUCTURED     - エージェントの structured_output。.summary の 1 行目をコミット件名に使う
@@ -75,17 +78,21 @@ for path in "${RESTORED_CONFIG_PATHS[@]}"; do
   fi
 done
 
-"${GIT_CMD}" add -A
-if "${GIT_CMD}" diff --cached --quiet; then
-  finish noop "No changes to commit."
-fi
-
-summary="$(printf '%s' "${STRUCTURED:-}" | jq -er '.summary // ""' 2>/dev/null | tr -d '\r' | head -n 1 || true)"
-[ -n "$summary" ] || summary="address CI failures and review comments"
-
+RESOLVED_MERGE="${RESOLVED_MERGE:-}"
 "${GIT_CMD}" config user.name "$GIT_USER_NAME"
 "${GIT_CMD}" config user.email "$GIT_USER_EMAIL"
-"${GIT_CMD}" commit --no-verify -m "${COMMIT_PREFIX} ${summary}"
+
+fix_sha=""
+"${GIT_CMD}" add -A
+if "${GIT_CMD}" diff --cached --quiet; then
+  [ -n "$RESOLVED_MERGE" ] || finish noop "No changes to commit."
+  echo "No changes to commit; pushing the resolved merge alone."
+else
+  summary="$(printf '%s' "${STRUCTURED:-}" | jq -er '.summary // ""' 2>/dev/null | tr -d '\r' | head -n 1 || true)"
+  [ -n "$summary" ] || summary="address CI failures and review comments"
+  "${GIT_CMD}" commit --no-verify -m "${COMMIT_PREFIX} ${summary}"
+  fix_sha="$("${GIT_CMD}" rev-parse HEAD)"
+fi
 
 # 作業ツリーはエージェントが編集でき、PR のコードでもあるので、checkout ではトークンを .git/config に残していない。
 # トークンを戻す前に、git が外部コマンドを起動する経路 (hook / fsmonitor 等) を潰して読まれないようにする。
@@ -112,7 +119,6 @@ fi
 # rebase で積み直さないのは、base をマージしたコミットを rebase が平坦化して base のコミットを複製するため。
 # base のマージを自動修正コミットの下に置くのは、CI のコードレビューが head がマージコミットの push を
 # スキップするため。マージコミットは squash merge で消えるので PR の履歴には残らない。
-fix_sha="$("${GIT_CMD}" rev-parse HEAD)"
 attempt=0
 while [ "$attempt" -lt "$MAX_RETRIES" ]; do
   attempt=$((attempt + 1))
@@ -120,11 +126,16 @@ while [ "$attempt" -lt "$MAX_RETRIES" ]; do
   "${GIT_CMD}" fetch origin "$REF" ${BASE:+"$BASE"}
   "${GIT_CMD}" checkout -q --detach "origin/${REF}"
   # 進行中の状態が残ると次の実行を壊しうるので、abort の失敗は警告で残す。
+  # base を直接マージし直すと同じコンフリクトに戻るので、先に解消済みのマージを取り込む。
+  if [ -n "$RESOLVED_MERGE" ] && ! "${GIT_CMD}" merge --no-edit -m "Merge ${BASE:-base} into ${REF}" "$RESOLVED_MERGE"; then
+    "${GIT_CMD}" merge --abort || echo "::warning::merge --abort failed; the repository may be left mid-merge."
+    finish conflict "Merging the resolved merge into origin/${REF} conflicted; leaving the fix to a human."
+  fi
   if [ -n "$BASE" ] && ! "${GIT_CMD}" merge --no-edit -m "Merge ${BASE} into ${REF}" "origin/${BASE}"; then
     "${GIT_CMD}" merge --abort || echo "::warning::merge --abort failed; the repository may be left mid-merge."
     finish conflict "Merging origin/${BASE} into origin/${REF} conflicted; leaving the fix to a human."
   fi
-  if ! "${GIT_CMD}" cherry-pick "$fix_sha"; then
+  if [ -n "$fix_sha" ] && ! "${GIT_CMD}" cherry-pick "$fix_sha"; then
     "${GIT_CMD}" cherry-pick --abort || echo "::warning::cherry-pick --abort failed; the repository may be left mid-cherry-pick."
     finish conflict "Applying ${COMMIT_PREFIX} onto origin/${REF} conflicted; leaving the fix to a human."
   fi

@@ -1,7 +1,8 @@
 name: Push Agent Fix
 description: |
   エージェントが編集した内容を 1 つの自動修正コミットにまとめ、最新の PR head に最新の base をマージした上へ
-  積み直して push する。緊急避難口のラベルが付いていたら push しない。マージか積み直しがコンフリクトしたら
+  積み直して push する。base とのコンフリクトを解消したマージコミットがあれば、その上に積む。
+  緊急避難口のラベルが付いていたら push しない。マージか積み直しがコンフリクトしたら
   積まずに result=conflict を返す。
   ロジックとテストは push-agent-fix.sh / push-agent-fix.bats を参照。
 
@@ -14,6 +15,10 @@ inputs:
     required: true
   base:
     description: マージする PR の base ブランチ名 (空なら PR から引く)
+    required: false
+    default: ""
+  resolved-merge:
+    description: actions/base-merge が base とのコンフリクトを解消したマージコミット (先に取り込み、修正が無くても push する)
     required: false
     default: ""
   structured:
@@ -58,6 +63,7 @@ runs:
         PR: ${{ inputs.pr-number }}
         REF: ${{ inputs.ref }}
         BASE: ${{ inputs.base }}
+        RESOLVED_MERGE: ${{ inputs.resolved-merge }}
         STRUCTURED: ${{ inputs.structured }}
         GIT_USER_NAME: ${{ inputs.git-user-name }}
         GIT_USER_EMAIL: ${{ inputs.git-user-email }}

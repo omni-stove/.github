@@ -1,0 +1,87 @@
+name: Base Merge
+description: |
+  自動修正の前に、checkout 済みの PR head へ origin の base をマージする。mode=start でマージを始め、コンフリクトしたら
+  マーカーを作業ツリーに残してエージェントに解消させ、mode=finish で解消をマージコミットにする (push はしない)。
+  きれいにマージできるなら何も残さず、push 時の actions/push-agent-fix のマージに任せる。
+  ロジックとテストは base-merge.sh / base-merge.bats を参照。
+
+inputs:
+  mode:
+    description: start | finish
+    required: true
+  pr-number:
+    description: PR 番号 (base を引く)
+    required: false
+    default: ""
+  base:
+    description: base ブランチ名 (空なら PR から引く)
+    required: false
+    default: ""
+  ref:
+    description: PR の head ブランチ名 (マージコミットの件名に使う)
+    required: false
+    default: ""
+  base-sha:
+    description: finish 用。start の出力 base-sha
+    required: false
+    default: ""
+  tree:
+    description: finish 用。start の出力 tree
+    required: false
+    default: ""
+  files:
+    description: finish 用。start の出力 files
+    required: false
+    default: ""
+  github-token:
+    description: base を引くトークン
+    required: false
+    default: ${{ github.token }}
+  git-user-name:
+    description: マージコミットの author 名
+    required: false
+    default: "github-actions[bot]"
+  git-user-email:
+    description: マージコミットの author メール
+    required: false
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+
+outputs:
+  result:
+    description: "start: clean | conflicted | unresolvable | failed / finish: resolved | unresolved"
+    value: ${{ steps.run.outputs.result }}
+  base:
+    description: マージした base ブランチ名 (conflicted のとき)
+    value: ${{ steps.run.outputs.base }}
+  base-sha:
+    description: マージした base のコミット (conflicted のとき)
+    value: ${{ steps.run.outputs.base-sha }}
+  tree:
+    description: マーカーごと stage した木 (conflicted のとき)
+    value: ${{ steps.run.outputs.tree }}
+  files:
+    description: コンフリクトしたパス (1 行 1 件。conflicted のとき)
+    value: ${{ steps.run.outputs.files }}
+  merge-sha:
+    description: 解消したマージコミット (resolved のとき)
+    value: ${{ steps.run.outputs.merge-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Base merge (${{ inputs.mode }})
+      id: run
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ inputs.pr-number }}
+        BASE: ${{ inputs.base }}
+        REF: ${{ inputs.ref }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        TREE: ${{ inputs.tree }}
+        FILES: ${{ inputs.files }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
+      run: bash "$GITHUB_ACTION_PATH/base-merge.sh"
