@@ -73,11 +73,11 @@ on:
         type: string
         default: ""
       regen-command:
-        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。対象ファイルの一覧のパスを REGEN_FILES で受け取る。空なら作り直さない
+        description: エージェントが package.json 等を変えたときに lockfile / 生成物を作り直すコマンド。素の runner で走るので、要るツールの用意 (corepack enable など) も含める。対象ファイルの一覧のパスを REGEN_FILES で受け取る。空なら作り直さない
         type: string
         default: ""
       node-version:
-        description: regen-command を動かす Node.js のバージョン
+        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ (ツールの用意は regen-command に含める)
         type: string
         default: "24"
       timeout-minutes:
@@ -222,7 +222,6 @@ jobs:
         with:
           structured: ${{ steps.agent.outputs.structured-output }}
           command: ${{ inputs.regen-command }}
-          node-version: ${{ inputs.node-version }}
 
       - name: Create PR
         id: pr

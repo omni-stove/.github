@@ -325,18 +325,23 @@ if [ -z "$WORKER_ALLOWED_BOTS" ] && [ "$VISIBILITY" = "PUBLIC" ]; then
 	WORKER_ALLOWED_BOTS='""  # 公開リポジトリでは外部 App が付けたラベルでも起動してしまうため'
 fi
 # The agent edits without installing, so a pnpm repo regenerates its lockfile before the PR is opened.
-REGEN_COMMAND="$(pick "$EXISTING_ISSUE_WORKER" regen-command "")"
-if [ -z "$REGEN_COMMAND" ] && [ -f pnpm-lock.yaml ]; then
-	REGEN_COMMAND="'pnpm install --lockfile-only --no-frozen-lockfile'"
-fi
+# The command runs on a bare runner (agent-regen installs no tools), so it enables pnpm through corepack itself.
+DEFAULT_REGEN_COMMAND="'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile'"
+# regen-command written before agent-regen stopped setting up pnpm: one that starts with pnpm gets corepack in front.
+regen_command() {
+	local v="$1"
+	case "$v" in
+		"'pnpm "* | '"pnpm '*) v="${v:0:1}corepack enable && ${v:1}" ;;
+	esac
+	[ -n "$v" ] || [ ! -f pnpm-lock.yaml ] || v="$DEFAULT_REGEN_COMMAND"
+	printf '%s' "$v"
+}
+REGEN_COMMAND="$(regen_command "$(pick "$EXISTING_ISSUE_WORKER" regen-command "")")"
 FIX_REGEN_COMMAND=""
 FIX_PROVIDER=""
 if [ "$FIX" = true ]; then
 	FIX_PROVIDER="$(pick "$GATE_SRC" fix-provider "\"${PROVIDER}\"")"
-	FIX_REGEN_COMMAND="$(pick "$GATE_SRC" regen-command "")"
-	if [ -z "$FIX_REGEN_COMMAND" ] && [ -f pnpm-lock.yaml ]; then
-		FIX_REGEN_COMMAND="'pnpm install --lockfile-only --no-frozen-lockfile'"
-	fi
+	FIX_REGEN_COMMAND="$(regen_command "$(pick "$GATE_SRC" regen-command "")")"
 fi
 # The fix job reads the failed jobs' logs.
 CI_ACTIONS_PERMISSION=""
@@ -392,6 +397,7 @@ EOF
 
 # The CI Gate job, waiting for the space-separated jobs in $1.
 gate_job() {
+	# node-version is listed empty so that the value an earlier install.sh wrote is dropped: ci-gate.yml no longer uses it.
 	cat <<EOF
   ${GATE_JOB}:
     needs: [${1// /, }]
@@ -413,7 +419,7 @@ $(with_block "$GATE_SRC" '^(fix|merge)-' \
 	"run-merge=$([ "$AUTO_MERGE" = true ] && echo true)" \
 	"fix-provider=${FIX_PROVIDER}" \
 	"regen-command=${FIX_REGEN_COMMAND}" \
-	"node-version=$([ "$FIX" = true ] && echo "$NODE_VERSION_VALUE")")
+	"node-version=")
     secrets: inherit
 EOF
 }

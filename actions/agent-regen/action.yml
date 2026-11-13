@@ -2,8 +2,9 @@ name: Agent Regen
 description: |
   エージェントの編集に合わせて lockfile と生成物を作り直す。エージェント実行後、commit / push の
   前に同じジョブで呼ぶ。エージェントは依存を install しないため、package.json や生成元を変えても
-  lockfile と生成物が追従せず CI の lint で落ちる。作り直しが要らなければ Node.js のセットアップごと省く。
-  作り直しのコマンドはリポジトリごとに違うので command で受け取り、空なら何もしない。command は環境変数
+  lockfile と生成物が追従せず CI の lint で落ちる。
+  作り直しのコマンドはリポジトリごとに違うので command で受け取り、空なら何もしない。command は素の runner で
+  走るので、要るツールの用意 (corepack enable や mise install など) も command に含める。command は環境変数
   REGEN_FILES で、エージェントの編集と PR の変更ファイルを 1 行 1 パスで列挙したファイルのパスを受け取り、
   作り直す範囲 (app / パッケージ) をそこから絞れる。
   判定と対象ファイルのロジック・テストは decide.sh / files.sh と .bats を参照。
@@ -26,13 +27,9 @@ inputs:
     required: false
     default: ${{ github.token }}
   command:
-    description: 作り直しのコマンド (例 "pnpm install --lockfile-only --no-frozen-lockfile")。空なら何もしない
+    description: 作り直しのコマンド (例 "corepack enable && pnpm install --lockfile-only --no-frozen-lockfile")。ツールの用意も含める。空なら何もしない
     required: false
     default: ""
-  node-version:
-    description: Node.js のバージョン
-    required: false
-    default: "24"
 
 outputs:
   needs-regen:
@@ -50,16 +47,6 @@ runs:
         STRUCTURED: ${{ inputs.structured }}
         CI_FAILURE: ${{ inputs.ci-failure }}
       run: bash "$GITHUB_ACTION_PATH/decide.sh"
-
-    - name: Setup pnpm
-      if: steps.decide.outputs.needs_regen == 'true'
-      uses: pnpm/action-setup@v4
-
-    - name: Setup Node.js
-      if: steps.decide.outputs.needs_regen == 'true'
-      uses: actions/setup-node@v6
-      with:
-        node-version: ${{ inputs.node-version }}
 
     # PR のコードを実行する作り直しのステップにトークンを渡さないため、一覧は別ステップで作る。
     - name: Collect target files

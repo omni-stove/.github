@@ -149,7 +149,7 @@ teardown() {
   sed -i.bak \
     -e "s|run: 'pnpm lint'|run: 'pnpm lint:ci'|" \
     -e 's|          node-version: "24"|          node-version: "22"|' \
-    -e 's|      node-version: "24"|      node-version: "22"  # CI だけ古い|' \
+    -e 's|^      run-fix: true$|      run-fix: true\n      node-version: "22"  # 以前の install.sh が CI Gate に書いていた|' \
     -e '/id-token: write/d' \
     -e 's|^      run-review: false$|      run-review: false\n      # 生成物は見ない\n      review-exclude-patterns: \|\n        "**/*.gen.ts"|' \
     -e 's|^  pull_request:$|  pull_request:\n  workflow_dispatch:|' \
@@ -162,7 +162,7 @@ teardown() {
   [ "$(grep -c "^      id-token: write" .github/workflows/ci.yml)" -eq 2 ]
   grep -qx "        run: 'pnpm lint:ci'" .github/workflows/ci.yml
   [ "$(grep -c '^          node-version: "22"$' .github/workflows/ci.yml)" -eq 2 ]
-  grep -qx '      node-version: "22"  # CI だけ古い' .github/workflows/ci.yml
+  ! grep -q '^      node-version:' .github/workflows/ci.yml
   grep -qx '      # 生成物は見ない' .github/workflows/ci.yml
   grep -qxF '      review-exclude-patterns: |' .github/workflows/ci.yml
   grep -qxF '        "**/*.gen.ts"' .github/workflows/ci.yml
@@ -230,7 +230,7 @@ YAML
   grep -qx '      review-instructions: "型を見る"' .github/workflows/ci.yml
   grep -qx "      run-fix: true" .github/workflows/ci.yml
   grep -qx '      fix-tier: "high"' .github/workflows/ci.yml
-  grep -qx '      node-version: "22"' .github/workflows/ci.yml
+  ! grep -q '^      node-version:' .github/workflows/ci.yml
   ! grep -q "finalize:" .github/workflows/ci.yml
   ! grep -q "lint-command\|test-command\|run-test\|test-jobs" .github/workflows/ci.yml
   [ "$(sed -n '/^  checks:/,/^  lint:/p' .github/workflows/ci.yml | grep -c 'fix-tier\|run-fix')" -eq 0 ]
@@ -511,7 +511,7 @@ YAML
   grep -qx "    uses: omni-stove/.github/.github/workflows/issue-worker.yml@v1" .github/workflows/issue-worker.yml
   grep -qxF "    types: [labeled]" .github/workflows/issue-worker.yml
   grep -qx "      provider: \"codex\"" .github/workflows/issue-worker.yml
-  grep -qx "      regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/issue-worker.yml
+  grep -qx "      regen-command: 'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/issue-worker.yml
   ! grep -q "allowed-bots" .github/workflows/issue-worker.yml
   grep -qx "    secrets: inherit" .github/workflows/issue-worker.yml
   ! grep -q '^$' <(sed -n '/with:/,/secrets: inherit/p' .github/workflows/issue-worker.yml)
@@ -567,8 +567,9 @@ YAML
 
 @test "an existing issue-worker.yml is updated without --issue-worker, keeping edited with: values" {
   bash "$SCRIPT" --issue-worker >/dev/null
+  # 編集された regen-command を、agent-regen が pnpm を用意していた頃の書き方 (corepack なし) にする。
   sed -i.bak \
-    -e "s|regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile'|regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile \&\& pnpm generate'|" \
+    -e "s|regen-command: 'corepack enable \&\& pnpm install --lockfile-only --no-frozen-lockfile'|regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile \&\& pnpm generate'|" \
     -e 's|^    with:$|    with:\n      instructions: "apps/web の規約に従う"|' \
     .github/workflows/issue-worker.yml
   rm .github/workflows/issue-worker.yml.bak
@@ -576,8 +577,11 @@ YAML
   [ "$status" -eq 0 ]
   [[ "$output" == *"updated	.github/workflows/issue-worker.yml"* ]]
   grep -qx "    uses: omni-stove/.github/.github/workflows/issue-worker.yml@v2" .github/workflows/issue-worker.yml
-  grep -qx "      regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile && pnpm generate'" .github/workflows/issue-worker.yml
+  grep -qx "      regen-command: 'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile && pnpm generate'" .github/workflows/issue-worker.yml
   grep -qx '      instructions: "apps/web の規約に従う"' .github/workflows/issue-worker.yml
+  bash "$SCRIPT" >/dev/null
+  [ "$(grep -c 'corepack enable' .github/workflows/issue-worker.yml)" -eq 1 ]
+  ! grep -q 'corepack enable && corepack enable' .github/workflows/issue-worker.yml
   [[ "$output" == *"secret	AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY"* ]]
   [[ "$output" != *"todo	PR を作る agent 用"* ]]
   run bash "$SCRIPT"
@@ -606,7 +610,7 @@ YAML
   [ "$status" -eq 0 ]
   grep -qx "      run-fix: true" .github/workflows/ci.yml
   grep -qx "      fix-provider: \"codex\"" .github/workflows/ci.yml
-  grep -qx "      regen-command: 'pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/ci.yml
+  grep -qx "      regen-command: 'corepack enable && pnpm install --lockfile-only --no-frozen-lockfile'" .github/workflows/ci.yml
   grep -qx "      actions: read" .github/workflows/ci.yml
   grep -q "label create skip-autofix" "$GH_LOG"
   grep -q "label create force-autofix" "$GH_LOG"

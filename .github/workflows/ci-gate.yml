@@ -79,11 +79,11 @@ on:
         type: string
         default: "squash"
       regen-command:
-        description: 自動修正が package.json 等を変えたか、CI が lockfile / 生成物の不一致で落ちたときに作り直すコマンド。対象ファイルの一覧のパスを REGEN_FILES で受け取る
+        description: 自動修正が package.json 等を変えたか、CI が lockfile / 生成物の不一致で落ちたときに作り直すコマンド。素の runner で走るので、要るツールの用意 (corepack enable など) も含める。対象ファイルの一覧のパスを REGEN_FILES で受け取る
         type: string
         default: ""
       node-version:
-        description: regen-command を動かす Node.js のバージョン
+        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ (ツールの用意は regen-command に含める)
         type: string
         default: "24"
     secrets:
@@ -220,7 +220,6 @@ jobs:
       allowed-bots: ${{ inputs.fix-allowed-bots }}
       instructions: ${{ inputs.fix-instructions }}
       regen-command: ${{ inputs.regen-command }}
-      node-version: ${{ inputs.node-version }}
     secrets: inherit
 
   merge:
