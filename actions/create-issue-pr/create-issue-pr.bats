@@ -99,32 +99,24 @@ teardown() {
   grep -q -- '--label prototype --label App:web --draft' "$CALLS"
 }
 
-@test "closes the issue only when closes_issue is true" {
-  STRUCTURED='{"message":"m","title":"t","purpose":"p","closes_issue":true}' \
-    BRANCH=b ISSUE=7 run bash "$SCRIPT"
+@test "always closes the issue" {
+  STRUCTURED='{"message":"m","title":"t","purpose":"p"}' BRANCH=b ISSUE=7 run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -q -- '- Closes #7' "$CALLS"
-  : > "$CALLS"
-  STRUCTURED='{"message":"m","title":"t","purpose":"p","closes_issue":false}' \
-    BRANCH=b ISSUE=7 run bash "$SCRIPT"
-  grep -q -- '- refs #7' "$CALLS"
-  ! grep -q 'Closes' "$CALLS"
-  : > "$CALLS"
-  STRUCTURED='{"message":"m","title":"t","purpose":"p"}' BRANCH=b ISSUE=7 run bash "$SCRIPT"
-  grep -q -- '- refs #7' "$CALLS"
+  ! grep -q 'refs' "$CALLS"
 }
 
-@test "strips closing keywords the agent wrote so closes_issue alone decides" {
-  STRUCTURED='{"message":"Fixes #99","title":"resolves #42","purpose":"Closes #99 と closes: #42 を直す","approach":"fixed #7","verification":"v","review_points":"r","closes_issue":false}' \
+@test "strips closing keywords the agent wrote so only the target issue closes" {
+  STRUCTURED='{"message":"Fixes #99","title":"resolves #42","purpose":"Closes #99 と closes: #42 を直す","approach":"fixed #7","verification":"v","review_points":"r"}' \
     BRANCH=b ISSUE=99 run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  ! grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?):? *#' "$CALLS"
-  grep -q -- '- refs #99' "$CALLS"
+  [ "$(grep -ciE '(close[sd]?|fix(e[sd])?|resolve[sd]?):? *#' "$CALLS")" -eq 1 ]
+  grep -q -- '- Closes #99' "$CALLS"
   grep -q '#99 と #42 を直す' "$CALLS"
 }
 
 @test "assembles all four template sections" {
-  STRUCTURED='{"message":"m","title":"t","purpose":"落ちるのを直す","approach":"null ガードを追加","verification":"一覧画面で確かめる","review_points":"境界値","closes_issue":true}' \
+  STRUCTURED='{"message":"m","title":"t","purpose":"落ちるのを直す","approach":"null ガードを追加","verification":"一覧画面で確かめる","review_points":"境界値"}' \
     BRANCH=b ISSUE=7 run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -q '## 目的' "$CALLS"
@@ -180,4 +172,32 @@ teardown() {
   AGENT_OUTCOME=failure BRANCH=b run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -q -- '--draft' "$CALLS"
+}
+
+@test "opens a follow-up issue for unimplemented requirements" {
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "%s"\necho https://github.com/o/r/issues/900\n' "${ROOT}/gh-calls" > "$GH_CMD"
+  STRUCTURED='{"message":"m","title":"配線する","unimplemented":"- ネット対戦側の配線"}' \
+    BRANCH=b ISSUE=7 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'create' "${ROOT}/gh-calls"
+  grep -qx '#7 の残り: 配線する' "${ROOT}/gh-calls"
+  grep -q 'https://github.com/o/r/pull/777 で実装しなかったもの' "${ROOT}/gh-calls"
+  grep -qx -- '- ネット対戦側の配線' "${ROOT}/gh-calls"
+  grep -qx 'follow_up_issue_url=https://github.com/o/r/issues/900' "$GITHUB_OUTPUT"
+}
+
+@test "does not open a follow-up issue when everything is implemented or the PR is skipped" {
+  STRUCTURED='{"message":"m","title":"t","unimplemented":""}' BRANCH=b ISSUE=7 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -e "${ROOT}/gh-calls" ]
+  echo 0 > "$DIRTY"
+  STRUCTURED='{"message":"m","title":"t","unimplemented":"- x"}' BRANCH=b ISSUE=7 run bash "$SCRIPT"
+  ! grep -qx 'create' "${ROOT}/gh-calls"
+}
+
+@test "does not fail when opening the follow-up issue fails" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$GH_CMD"
+  STRUCTURED='{"message":"m","title":"t","unimplemented":"- x"}' BRANCH=b ISSUE=7 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'follow_up_issue_url=' "$GITHUB_OUTPUT"
 }

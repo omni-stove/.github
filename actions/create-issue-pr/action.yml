@@ -2,7 +2,8 @@ name: Create Issue PR
 description: |
   Issue Worker のエージェントが作業ツリーに残した編集を 1 コミットにまとめ、最新の base に rebase してブランチへ push して
   PR を作る。PR の文面はエージェントの構造化出力 (message / title / purpose / approach /
-  verification / review_points / closes_issue) から取り、変更が無ければ PR を作らず Issue に
+  verification / review_points) から取り、Issue は Closes で参照してマージで閉じる。
+  エージェントが unimplemented に挙げた実装しなかった要求は、後続 Issue として起こす。、変更が無ければ PR を作らず Issue に
   理由をコメントする。ロジックとテストは create-issue-pr.sh / create-pr.sh と各 .bats を参照。
 
 inputs:
@@ -18,7 +19,7 @@ inputs:
     required: false
     default: ${{ github.event.repository.default_branch }}
   issue-number:
-    description: 対象 Issue 番号。Closes / refs で PR から参照する
+    description: 対象 Issue 番号。PR から Closes で参照する
     required: false
     default: ""
   labels:
@@ -59,6 +60,9 @@ outputs:
   pr-number:
     description: PR 番号。PR を作らなかったときは空
     value: ${{ steps.create.outputs.pr_number }}
+  follow-up-issue-url:
+    description: 実装しなかった要求を起こした後続 Issue の URL。起こさなかったときは空
+    value: ${{ steps.create.outputs.follow_up_issue_url }}
 
 runs:
   using: composite

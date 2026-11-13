@@ -10,10 +10,10 @@
 # 入力 (環境変数):
 #   STRUCTURED     - エージェントの structured_output (JSON 文字列)。.message/.title と
 #                    テンプレ節 (.purpose/.approach/.verification/.review_points) を使う。
-#                    .closes_issue が true なら Issue を "Closes"、それ以外は "refs" で参照する
+#                    .unimplemented が空でなければ、その残りを後続 Issue として起こす
 #   BRANCH         - 作成する PR の head ブランチ名
 #   BASE           - PR の base ブランチ名
-#   ISSUE          - 対象 Issue 番号 (任意)。「目的」節の先頭に Closes / refs で参照する
+#   ISSUE          - 対象 Issue 番号 (任意)。「目的」節の先頭に Closes で参照し、マージで閉じる
 #   LABELS         - PR に付けるラベル (スペース区切り、任意)
 #   DRAFT          - "true" なら draft PR にする (任意)
 #   START_SHA      - エージェント実行前の HEAD (任意)。エージェントが commit してしまった変更も拾う
@@ -21,7 +21,8 @@
 #                    draft PR にし、無ければ Issue に失敗を書いて非ゼロで終える
 #   GH_TOKEN       - gh 認証用
 #   GH_CMD / CREATE_PR_CMD - テストで差し替える (既定: gh / 隣の create-pr.sh)
-# 出力 (GITHUB_OUTPUT があれば): pr_url / pr_number (PR を作らなかったときは空)
+# 出力 (GITHUB_OUTPUT があれば): pr_url / pr_number (PR を作らなかったときは空)、
+#   follow_up_issue_url (後続 Issue を起こさなかったときは空)
 set -euo pipefail
 
 : "${BRANCH:?BRANCH is required}"
@@ -40,15 +41,10 @@ purpose="$(field purpose)"
 approach="$(field approach)"
 verification="$(field verification)"
 review_points="$(field review_points)"
-closes_issue="$(printf '%s' "${STRUCTURED:-}" | jq -r '.closes_issue == true' 2>/dev/null || echo "false")"
-if [ "${closes_issue}" = "true" ]; then
-  issue_keyword="Closes"
-else
-  issue_keyword="refs"
-fi
+unimplemented="$(field unimplemented)"
 
-# GitHub はコミットメッセージや PR 本文の close 系キーワードでも Issue を閉じる。閉じるかを
-# closes_issue だけで決めるため、エージェントの文面からはキーワードを外して "#<番号>" だけ残す。
+# GitHub はコミットメッセージや PR 本文の close 系キーワードでも Issue を閉じる。対象 Issue 以外を
+# 閉じないよう、エージェントの文面からはキーワードを外して "#<番号>" だけ残す。
 strip_closing_keywords() {
   printf '%s' "$1" | perl -pe 's/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s*(?=(?:[\w.-]+\/[\w.-]+)?#\d)//gi'
 }
@@ -100,6 +96,7 @@ if [ "$has_changes" = false ]; then
   fi
   output pr_url ""
   output pr_number ""
+  output follow_up_issue_url ""
   if [ "$failed" = true ]; then
     echo "::error::${comment}"
     exit 1
@@ -111,7 +108,7 @@ fi
 [ "$agent_outcome" = "success" ] || DRAFT=true
 
 issue_ref=""
-[ -z "${ISSUE:-}" ] || issue_ref="- ${issue_keyword} #${ISSUE}"$'\n\n'
+[ -z "${ISSUE:-}" ] || issue_ref="- Closes #${ISSUE}"$'\n\n'
 body="$("${SCRIPT_DIR}/pr-body-template.sh" "${issue_ref}${purpose}" "${approach}" "${verification}" "${review_points}")"
 
 extra_args=()
@@ -124,3 +121,13 @@ pr_url="$("${CREATE_PR_CMD}" "${BRANCH}" "${BASE}" "${message}" "${title}" "${bo
   ${extra_args[@]+"${extra_args[@]}"} | tee /dev/stderr | tail -n 1)"
 output pr_url "${pr_url}"
 output pr_number "$(printf '%s' "${pr_url}" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
+
+# PR は対象 Issue を必ず閉じるので、実装しなかった要求はここで別 Issue にしないと追う先が無くなる。
+# ラベルを付けないのは、Issue Worker を勝手に再起動させず人が着手を決めるため。起票の失敗は成否に影響させない。
+follow_up_url=""
+if [ -n "${ISSUE:-}" ] && [ -n "${unimplemented}" ]; then
+  follow_up_body="#${ISSUE} の要求のうち、${pr_url} で実装しなかったもの。"$'\n\n'"${unimplemented}"
+  follow_up_url="$("${GH_CMD}" issue create --title "#${ISSUE} の残り: ${title}" --body "${follow_up_body}" | tail -n 1)" \
+    || { echo "follow-up issue creation failed (non-fatal)" >&2; follow_up_url=""; }
+fi
+output follow_up_issue_url "${follow_up_url}"
