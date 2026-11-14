@@ -92,7 +92,7 @@ Organization の Settings → Secrets and variables → Actions → New organiza
 
 | secret | 使う workflow | 値 |
 | --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `ci-gate.yml` (`run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証 |
+| `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` | `ci.yml` (`run-review`) / `ci-gate.yml` (`run-fix`) / `issue-worker.yml` / `claude-code.yml` の provider `claude` | Claude Code の認証。両方あれば `ANTHROPIC_API_KEY` を使う |
 | `OPENAI_API_KEY` | 同上の provider `codex` | Codex の認証 |
 | `REVIEWER_GH_APP_ID` / `REVIEWER_GH_APP_PRIVATE_KEY` | `ci.yml` / `ci-gate.yml` / `hotfix-revert-approve.yml` | reviewer App の App ID / PEM。無ければ `github.token` で投稿する |
 | `AGENT_GH_APP_ID` / `AGENT_GH_APP_PRIVATE_KEY` | `issue-worker.yml` / `ci-gate.yml` (`run-fix` / `run-merge` / 作り直し) / `unblock.yml` | agent App の App ID / PEM。issue-worker は無ければ `github.token` で PR を作る。自動修正と自動マージと unblock は無ければ起動しない。作り直しは無ければ push せずに CI Gate を落とす |

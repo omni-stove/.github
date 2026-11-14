@@ -6,7 +6,7 @@ description: |
 
   認証は with ではなく env で受ける (composite action は secrets を直接参照できないため):
     env:
-      ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN   (provider=claude のどちらか)
+      ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN   (provider=claude のどちらか。両方あれば API key を使う)
       OPENAI_API_KEY                                (provider=codex)
       AGENT_GITHUB_TOKEN                            (任意。github-token 入力が空のときに使う)
 
@@ -190,10 +190,12 @@ runs:
       uses: anthropics/claude-code-action@v1
       env:
         OPENAI_API_KEY: ''
+        # 両方あるとどちらで課金されるかが Claude Code 側の解決順に委ねられるため、API key があれば OAuth token を渡さない。
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ env.ANTHROPIC_API_KEY == '' && env.CLAUDE_CODE_OAUTH_TOKEN || '' }}
       with:
         # 認証は env から拾う (with に露出させない)。
         anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
-        claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+        claude_code_oauth_token: ${{ env.ANTHROPIC_API_KEY == '' && env.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         github_token: ${{ steps.gh-token.outputs.token }}
         show_full_output: ${{ inputs.show-full-output }}
         allowed_bots: ${{ inputs.allowed-bots }}
@@ -224,9 +226,10 @@ runs:
       uses: anthropics/claude-code-action@v1
       env:
         OPENAI_API_KEY: ''
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ env.ANTHROPIC_API_KEY == '' && env.CLAUDE_CODE_OAUTH_TOKEN || '' }}
       with:
         anthropic_api_key: ${{ env.ANTHROPIC_API_KEY }}
-        claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+        claude_code_oauth_token: ${{ env.ANTHROPIC_API_KEY == '' && env.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         github_token: ${{ steps.gh-token.outputs.token }}
         show_full_output: ${{ inputs.show-full-output }}
         allowed_bots: ${{ inputs.allowed-bots }}
