@@ -49,6 +49,10 @@ inputs:
     description: コミット件名の接頭辞 (fix-context のループ防止と揃える)
     required: false
     default: "[agent-fix]"
+  working-directory:
+    description: commit / push する作業ツリー
+    required: false
+    default: "."
 
 outputs:
   result:
@@ -61,6 +65,7 @@ runs:
     - name: Commit and push
       id: push
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PUSH_TOKEN: ${{ inputs.github-token }}

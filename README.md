@@ -120,9 +120,16 @@ PR 1 件だけ止めるなら `skip-automerge` を付ける (`prototype` ラベ�
 
 エージェントは依存を入れずに編集するので、lockfile や生成物 (Unity の `.meta`、Prisma の出力など) は CI が作り直す。
 作り直しに要るツール (`node_modules`、Unity Editor、DB) を持つ利用側のジョブで、作り直しのコマンドの直後に
-`actions/regen-diff` を呼ぶ。差分は patch として artifact に上がり、CI Gate が PR の head に 1 コミット (`[regen] ...`)
-で積んで push し、その run は落とす。push は agent App のトークンで行うので次の run がそのコミットを検証する。
-agent App が無いときや fork の PR では push せずに落とすだけなので、手元で作り直してコミットする。
+`actions/regen-diff` を呼ぶ。
+
+- `app-id` / `app-private-key` に agent App を渡すと、差分が出たらその場で PR の head に `[regen] ...` のコミットを
+  push する。push が起こした次の run が生成物を含めてレビュー・lint・test をやり直すので、呼び出し側の
+  `concurrency` (`cancel-in-progress: true`) でその run は取り消される。他のジョブは止めずに並行で走らせてよい。
+  取り消されずに残った CI Gate は、作り直す前のコミットを検証した run として落とす (積み直しはしない)。
+- 渡さないときは、差分が patch として artifact に上がり、CI Gate が全ジョブの完了後に PR の head に 1 コミットで
+  積んで push し、その run は落とす。push は agent App のトークンで行うので次の run がそのコミットを検証する。
+- agent App が無いときや fork の PR、pull_request 以外のイベントでは push せずに落とすだけなので、手元で作り直して
+  コミットする。
 
 ```yaml
   lint:
@@ -137,6 +144,8 @@ agent App が無いときや fork の PR では push せずに落とすだけな
           pathspec: |
             pnpm-lock.yaml
             src/generated
+          app-id: ${{ secrets.AGENT_GH_APP_ID }}
+          app-private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
       - run: pnpm lint
   unity-test:
     steps:
@@ -150,6 +159,8 @@ agent App が無いときや fork の PR では push せずに落とすだけな
 - 落ちうるステップの後に置くなら `if: ${{ !cancelled() }}` を付ける (前のステップが落ちても差分を残す)。
 - `pathspec` はジョブ間で重ねない。同じコミットから作った patch を順に当てるので、重なると衝突する。
 - matrix のジョブでは `name` をジョブごとに変える。
+- その場の push は、PR のコードを実行したジョブで agent App のトークンを使う。ジョブの作業ツリーとは別のディレクトリに
+  patch を作ったコミットを取り直して当てるので、checkout は既定のままでよい。
 - install.sh は pnpm のリポジトリの `lint` ジョブに `pnpm-lock.yaml` の分を書く (新しく作るときだけ。既存の `lint` ジョブには `todo` を出す)。
 - `[regen]` が head なのにまた差分が出たら (生成が実行のたびに違う結果を出す) push しない。
 

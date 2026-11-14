@@ -5,7 +5,8 @@ name: CI
 #   precheck.yml   前処理 (緊急避難口とコンフリクト判定)。outputs.proceed が 'true' のときだけ後続を走らせる
 #   ci.yml (これ)  Code Review。指摘をインラインコメントにする
 #   自前のジョブ   lint / test / build。reusable workflow はジョブを入力として受け取れないため呼び出し側に書く。
-#                  lockfile / 生成物を作り直したら actions/regen-diff で差分を CI Gate に渡す
+#                  lockfile / 生成物を作り直したら actions/regen-diff を呼ぶ。agent App を渡すとその場で PR に
+#                  push し、渡さないと差分を CI Gate に渡す
 #   ci-gate.yml    全ジョブの結果を単一の必須チェック "CI Gate" に集約し、approve / request-changes と自動修正を行う
 #
 #   jobs:
@@ -20,7 +21,15 @@ name: CI
 #     lint:
 #       needs: precheck
 #       if: needs.precheck.outputs.proceed == 'true'
-#       ...
+#       steps:
+#         - uses: actions/checkout@v6
+#         - ...                       # 作り直しのコマンド (pnpm install --no-frozen-lockfile など)
+#         - uses: omni-stove/.github/actions/regen-diff@main
+#           with:
+#             pathspec: pnpm-lock.yaml
+#             app-id: ${{ secrets.AGENT_GH_APP_ID }}
+#             app-private-key: ${{ secrets.AGENT_GH_APP_PRIVATE_KEY }}
+#         - ...                       # lint
 #     ci:
 #       needs: [precheck, checks, lint]
 #       if: always()

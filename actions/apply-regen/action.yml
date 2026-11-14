@@ -1,7 +1,8 @@
 name: Apply Regen
 description: |
-  actions/regen-diff が上げた patch を当て、作り直しのコミットとして PR の head に push する。ci-gate.yml が、
-  その run の github.sha を checkout した作業ツリーで呼ぶ。PR のコードは実行しない (git apply と commit / push だけ)。
+  actions/regen-diff が作った patch を当て、作り直しのコミットとして PR の head に push する。ci-gate.yml が
+  その run の github.sha を checkout した作業ツリーで呼び、regen-diff (push の入力を渡したとき) が patch を作った
+  コミットを取り直した作業ツリーで呼ぶ。PR のコードは実行しない (git apply と commit / push だけ)。
   head がすでに作り直しのコミットなのにまた差分が出たら (生成が決定的でない) push しない。
   push は actions/push-agent-fix に任せる (最新の base をマージした最新の head に積み直す)。base のマージが
   コンフリクトしたら base をマージせず最新の head に積む。作り直しは base とのコンフリクトと関係なく
@@ -34,6 +35,10 @@ inputs:
     description: 作り直しのコミットの件名の接頭辞 (actions/fix-context のループ防止と揃える)
     required: false
     default: "[regen]"
+  working-directory:
+    description: patch を作ったコミットを checkout した、変更の無い作業ツリー
+    required: false
+    default: "."
 
 outputs:
   result:
@@ -46,6 +51,7 @@ runs:
     - name: Apply patches
       id: apply
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         PATCH_DIR: ${{ inputs.patch-dir }}
         HEAD_SHA: ${{ inputs.head-sha }}
@@ -65,3 +71,4 @@ runs:
         git-user-email: ${{ inputs.git-user-email }}
         commit-prefix: ${{ inputs.commit-prefix }}
         on-base-conflict: skip
+        working-directory: ${{ inputs.working-directory }}

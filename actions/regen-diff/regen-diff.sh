@@ -35,7 +35,7 @@ GIT_INDEX_FILE="$index" "${GIT_CMD}" diff --cached --binary HEAD -- "${specs[@]}
 
 if [ -s "$OUT" ]; then
   echo "changed=true" >> "$GITHUB_OUTPUT"
-  echo "::notice::作り直しで差分が出た。CI Gate が PR に積む:"
+  echo "::notice::作り直しで差分が出た:"
   GIT_INDEX_FILE="$index" "${GIT_CMD}" diff --cached --name-status HEAD -- "${specs[@]}"
 else
   echo "changed=false" >> "$GITHUB_OUTPUT"

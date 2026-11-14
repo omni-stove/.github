@@ -1,15 +1,21 @@
 name: Regen Diff
 description: |
   lint / test などのジョブが作り直した lockfile と生成物 (pnpm-lock.yaml、Unity の .meta、Prisma の出力など) の差分を
-  patch にし、artifact "regen-<name>" に上げる。CI Gate (ci-gate.yml) が run の中の patch を集め、PR の head に
-  1 コミットで積んで push し、その run は落とす。push は agent App のトークンで行うので、次の run がその
-  コミットを検証する。
+  patch にし、artifact "regen-<name>" に上げる。
   作り直しには生成のツール一式 (node_modules、Unity Editor、DB) が要るので、それを既に持つジョブの中で、作り直しの
-  コマンドの直後に呼ぶ。このアクションはトークンを持たず PR のコードも実行しない。
+  コマンドの直後に呼ぶ。
+  - app-id / app-private-key (agent App) を渡すと、差分が出たらその場で PR の head に [regen] コミットとして push
+    する (actions/apply-regen)。push が起こした次の run が生成物を含めて全部を検証するので、呼び出し側の
+    concurrency (cancel-in-progress) でこの run は取り消される。push した patch は artifact に残さず、印 (pushed) だけ
+    残して CI Gate (ci-gate.yml) が積み直さないようにする。
+  - 渡さないとき、push できない run (fork の PR、pull_request 以外のイベント) と push できなかったときは、CI Gate が
+    run の中の patch を集めて 1 コミットで積んで push し、その run を落とす。
+  - push は PR のコードを実行したジョブでトークンを使う。作業ツリーとは別のディレクトリに patch を作ったコミットを
+    取り直して当てるので、ジョブの作業ツリーと checkout の認証情報には手を入れない。
   - 前のステップが落ちても patch を残すよう、落ちうるステップの後に置くなら if: "!cancelled()" を付ける。
   - pathspec はジョブ間で重ねない。同じコミットから作った patch を順に当てるので、重なると衝突する。
   - matrix のジョブでは name をジョブごとに変える (artifact 名が重なると上書きされる)。
-  差分の取り方とテストは regen-diff.sh / regen-diff.bats を参照。
+  差分の取り方とテストは regen-diff.sh / regen-diff.bats、push の作業ツリーは clone-for-push.sh を参照。
 
 inputs:
   pathspec:
@@ -19,11 +25,22 @@ inputs:
     description: artifact 名の接尾辞 (regen-<name>)。既定はジョブ ID
     required: false
     default: ${{ github.job }}
+  app-id:
+    description: その場で push する agent App の App ID (secrets.AGENT_GH_APP_ID)。空なら push せず CI Gate に任せる
+    required: false
+    default: ""
+  app-private-key:
+    description: その場で push する agent App の Private Key (secrets.AGENT_GH_APP_PRIVATE_KEY)
+    required: false
+    default: ""
 
 outputs:
   changed:
     description: 差分があれば 'true'
     value: ${{ steps.diff.outputs.changed }}
+  pushed:
+    description: その場で push したら 'true'
+    value: ${{ steps.push.outputs.result == 'pushed' }}
 
 runs:
   using: composite
@@ -36,13 +53,65 @@ runs:
         OUT: ${{ runner.temp }}/regen-${{ inputs.name }}/regen.patch
       run: bash "$GITHUB_ACTION_PATH/regen-diff.sh"
 
+    # push の失敗でジョブを落とさない。patch を残して CI Gate に任せる。
+    - name: Generate agent App token
+      id: token
+      if: >-
+        steps.diff.outputs.changed == 'true'
+        && inputs.app-id != '' && inputs.app-private-key != ''
+        && github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+      continue-on-error: true
+      uses: omni-stove/.github/actions/github-app-token@main
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+
+    - name: Check out the commit the patch was made from
+      id: clone
+      if: steps.token.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        DIR: ${{ runner.temp }}/regen-${{ inputs.name }}-push
+        PUSH_TOKEN: ${{ steps.token.outputs.token }}
+      run: |
+        SHA="$(git rev-parse HEAD)" bash "$GITHUB_ACTION_PATH/clone-for-push.sh"
+
+    - name: Push the regeneration
+      id: push
+      if: steps.clone.outcome == 'success'
+      continue-on-error: true
+      uses: omni-stove/.github/actions/apply-regen@main
+      with:
+        patch-dir: ${{ runner.temp }}/regen-${{ inputs.name }}
+        working-directory: ${{ runner.temp }}/regen-${{ inputs.name }}-push
+        ref: ${{ github.event.pull_request.head.ref }}
+        pr-number: ${{ github.event.pull_request.number }}
+        head-sha: ${{ github.event.pull_request.head.sha }}
+        github-token: ${{ steps.token.outputs.token }}
+        git-user-name: ${{ steps.token.outputs.bot-login }}
+        git-user-email: ${{ format('{0}@users.noreply.github.com', steps.token.outputs.bot-login) }}
+
+    # 空の patch で上書きし pushed の印を置く。CI Gate はこの run が作り直す前のコミットを検証したとして落とすが、
+    # patch は積まない。
+    - name: Mark the patch as pushed
+      if: steps.push.outputs.result == 'pushed'
+      shell: bash
+      env:
+        DIR: ${{ runner.temp }}/regen-${{ inputs.name }}
+      run: |
+        : > "$DIR/regen.patch"
+        : > "$DIR/pushed"
+        echo "::notice::作り直しの差分を PR の head に push した。次の run が検証する。"
+
     # 差分が無くても空の patch で上書きする。失敗したジョブを re-run したとき、前の attempt の patch が残って
     # CI Gate が積み済みの差分をもう一度積もうとしないように。
     - name: Upload patch
       uses: actions/upload-artifact@v4
       with:
         name: regen-${{ inputs.name }}
-        path: ${{ runner.temp }}/regen-${{ inputs.name }}/regen.patch
+        path: ${{ runner.temp }}/regen-${{ inputs.name }}
         overwrite: true
         retention-days: 1
         if-no-files-found: error
