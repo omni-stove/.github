@@ -2,7 +2,8 @@ name: CI
 
 # Code Review を担う reusable workflow。CI の組み立ては呼び出し側が行う:
 #
-#   precheck.yml   前処理 (緊急避難口とコンフリクト判定)。outputs.proceed が 'true' のときだけ後続を走らせる
+#   precheck.yml   前処理 (緊急避難口とコンフリクト判定)。lint / test などは outputs.proceed、Code Review は
+#                  outputs.review が 'true' のときだけ走らせる (コンフリクトを解消しただけの push ではレビューを飛ばす)
 #   ci.yml (これ)  Code Review。指摘をインラインコメントにする
 #   自前のジョブ   lint / test / build。reusable workflow はジョブを入力として受け取れないため呼び出し側に書く。
 #                  lockfile / 生成物を作り直したら actions/regen-diff を呼ぶ。agent App を渡すとその場で PR に
@@ -14,7 +15,7 @@ name: CI
 #       uses: omni-stove/.github/.github/workflows/precheck.yml@main
 #     checks:
 #       needs: precheck
-#       if: needs.precheck.outputs.proceed == 'true'
+#       if: needs.precheck.outputs.review == 'true'
 #       uses: omni-stove/.github/.github/workflows/ci.yml@main
 #       with: { run-review: true }
 #       secrets: inherit

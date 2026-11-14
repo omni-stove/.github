@@ -1,0 +1,45 @@
+name: Conflict Resolution Check
+description: |
+  CI Gate を通った head に base をマージしてコンフリクトを解消しただけの push かを判定する。
+  only == 'true' のとき、呼び出し側 (precheck.yml) は後続の CI を飛ばす。判定できないときは 'false' (CI を回す) に倒す。
+  checkout 済みの作業ツリーに head と origin/<base> の全履歴が要る。
+  判定のロジックとテストは check-conflict-resolution.sh / check-conflict-resolution.bats を参照。
+
+inputs:
+  before:
+    description: push 前の head (github.event.before)
+    required: true
+  head-sha:
+    description: push 後の head
+    required: true
+  base:
+    description: base ブランチ名
+    required: true
+  check-name:
+    description: push 前の head で通っていることを確かめるチェック名 ("<job> / <名前>" も一致する)
+    required: false
+    default: "CI Gate"
+  github-token:
+    description: チェックを引くトークン (checks: read)
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  only:
+    description: コンフリクトの解消だけの push なら 'true'
+    value: ${{ steps.check.outputs.only }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check whether the push only resolves conflicts
+      id: check
+      shell: bash
+      env:
+        BEFORE: ${{ inputs.before }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE: ${{ inputs.base }}
+        REPO: ${{ github.repository }}
+        CHECK_NAME: ${{ inputs.check-name }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/check-conflict-resolution.sh"

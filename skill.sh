@@ -270,8 +270,9 @@ ${CATALOG}/README.md。reusable workflow の jobs: が composite action の並�
 
 ci.yml の形は precheck (precheck.yml: 前処理) → checks (ci.yml: Code Review) と repo の lint / test ジョブ →
 CI Gate (ci-gate.yml) で決まっていて、lint / test / build はどの repo でも呼び出し側のジョブとして書く (書き方は
-ci.yml のヘッダー)。checks と repo のジョブは needs: precheck と if: needs.precheck.outputs.proceed == 'true' で
-緊急避難口とコンフリクトの run を飛ばし、CI Gate の needs に全部並べる。
+ci.yml のヘッダー)。repo のジョブは needs: precheck と if: needs.precheck.outputs.proceed == 'true' で
+緊急避難口とコンフリクトの run を飛ばし、checks は if: needs.precheck.outputs.review == 'true' でコンフリクトを
+解消しただけの push も飛ばす。CI Gate の needs に全部並べる。
 - まず install.sh で雛形を作る (pnpm の lint / typecheck / test ジョブ、ラベル / secrets 確認 / ruleset まで行う。
   オプションは --help)。
     ${INSTALL_CMD} --review --ruleset

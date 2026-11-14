@@ -23,4 +23,4 @@ run = [
 
 [test]
 description = "Run the bats tests (install.bats, skill.bats and the actions' *.bats)"
-run = "bats install.bats skill.bats actions/agent-run actions/regen-diff actions/apply-regen actions/create-issue-pr actions/resolve-issue actions/base-merge actions/decide-fix actions/decide-merge actions/fix-context actions/push-agent-fix actions/post-fix-result actions/unblock"
+run = "bats install.bats skill.bats actions/agent-run actions/regen-diff actions/apply-regen actions/create-issue-pr actions/resolve-issue actions/base-merge actions/check-conflict-resolution actions/decide-fix actions/decide-merge actions/fix-context actions/push-agent-fix actions/post-fix-result actions/unblock"

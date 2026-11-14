@@ -1,22 +1,34 @@
 name: Precheck
 
-# CI の前処理を担う reusable workflow。呼び出し側の Code Review (ci.yml) と lint / test などのジョブは、
-# outputs.proceed が 'true' のときだけ走らせる。呼び出し方は ci.yml のヘッダーを参照。
+# CI の前処理を担う reusable workflow。呼び出し側の lint / test などのジョブは outputs.proceed が 'true' のとき、
+# Code Review (ci.yml) は outputs.review が 'true' のときだけ走らせる。呼び出し方は ci.yml のヘッダーを参照。
 #
 # - hotfix / revert ラベル付き PR と revert- ブランチ (緊急避難口) では、このジョブ自体が skipped になり
 #   proceed は空になる。CI Gate は always() で走り、同じ条件を見て素通しの success を出す。
 # - PR がベースとマージコンフリクトしている (mergeable_state=dirty) 場合は、どうせマージできないので
 #   proceed を 'false' にして後続のコストを削る。コンフリクト解消で synchronize イベントが飛び、CI は再実行される。
+#   ただしコンフリクトしている PR では GitHub が pull_request の workflow をそもそも起動しないので、これが効くのは
+#   起動してから判定するまでに base が進んだときだけ。
+# - CI Gate を通った head に base をマージしてコンフリクトを解消しただけの push (actions/check-conflict-resolution)
+#   では、review を 'false'、resolution-only を 'true' にする。lint / test は回し、Code Review は飛ばす。
+#   レビューの対象の PR 自身の差分は解消でほとんど変わらないが、base の変更との組み合わせはまだ誰も検証していないため。
+#   CI Gate はこの run で approve / request-changes を提出しない。
 
 on:
   workflow_call:
     outputs:
       proceed:
-        description: 後続のジョブを走らせるなら 'true'。緊急避難口では空、コンフリクトでは 'false'
+        description: lint / test などのジョブを走らせるなら 'true'。緊急避難口では空、コンフリクトでは 'false'
         value: ${{ jobs.precheck.outputs.proceed }}
+      review:
+        description: Code Review を走らせるなら 'true'。proceed に加え、コンフリクトを解消しただけの push でも 'false'
+        value: ${{ jobs.precheck.outputs.review }}
       conflicted:
         description: PR がコンフリクトしていれば 'true'
         value: ${{ jobs.precheck.outputs.conflicted }}
+      resolution-only:
+        description: CI Gate を通った head のコンフリクトを解消しただけの push なら 'true'
+        value: ${{ jobs.precheck.outputs.resolution-only }}
 
 jobs:
   precheck:
@@ -28,11 +40,14 @@ jobs:
         && !startsWith(github.head_ref, 'revert-'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      pull-requests: read
+    # permissions を書かず呼び出し側のジョブから受け継ぐ。解消の判定に contents: read / checks: read が要るが、
+    # ここで要求すると、それを渡していない呼び出し側の workflow がまるごと起動しなくなるため。
+    # 渡されていなければ判定が失敗し、CI を回す側に倒れる。
     outputs:
       proceed: ${{ steps.conflict.outputs.conflicted != 'true' }}
+      review: ${{ steps.conflict.outputs.conflicted != 'true' && steps.resolution.outputs.only != 'true' }}
       conflicted: ${{ steps.conflict.outputs.conflicted || 'false' }}
+      resolution-only: ${{ steps.resolution.outputs.only || 'false' }}
     steps:
       - name: Check PR conflict
         id: conflict
@@ -40,3 +55,25 @@ jobs:
         uses: omni-stove/.github/actions/check-pr-conflict@main
         with:
           pr-number: ${{ github.event.pull_request.number }}
+
+      - name: Checkout for the conflict resolution check
+        id: checkout
+        if: >-
+          github.event_name == 'pull_request' && github.event.action == 'synchronize'
+          && steps.conflict.outputs.conflicted != 'true'
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Check conflict resolution
+        id: resolution
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
+        uses: omni-stove/.github/actions/check-conflict-resolution@main
+        with:
+          before: ${{ github.event.before }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          base: ${{ github.event.pull_request.base.ref }}

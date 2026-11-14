@@ -56,13 +56,15 @@ teardown() {
   [ ! -e .github/workflows/auto-merge.yml ]
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci.yml@main" .github/workflows/ci.yml
   grep -qx "    uses: omni-stove/.github/.github/workflows/precheck.yml@main" .github/workflows/ci.yml
+  grep -A3 -x "    uses: omni-stove/.github/.github/workflows/precheck.yml@main" .github/workflows/ci.yml | grep -qx "      checks: read"
   grep -qx "    uses: omni-stove/.github/.github/workflows/ci-gate.yml@main" .github/workflows/ci.yml
   grep -qx "        uses: omni-stove/.github/actions/setup-pnpm-node@main" .github/workflows/ci.yml
   grep -qx "          node-version: \"24\"" .github/workflows/ci.yml
   grep -qx "        run: 'pnpm lint'" .github/workflows/ci.yml
   grep -qx "        run: 'echo \"skip: no typecheck script\"'" .github/workflows/ci.yml
   grep -qx "        run: 'pnpm test'" .github/workflows/ci.yml
-  [ "$(grep -c "^    if: needs.precheck.outputs.proceed == 'true'" .github/workflows/ci.yml)" -eq 3 ]
+  [ "$(grep -c "^    if: needs.precheck.outputs.proceed == 'true'" .github/workflows/ci.yml)" -eq 2 ]
+  [ "$(sed -n '/^  checks:/{n;n;p;}' .github/workflows/ci.yml)" = "    if: needs.precheck.outputs.review == 'true'" ]
   grep -qxF "    needs: [precheck, checks, lint, test]" .github/workflows/ci.yml
   grep -qxF '      results: ${{ toJSON(needs) }}' .github/workflows/ci.yml
   grep -qxF '      conflicted: ${{ needs.precheck.outputs.conflicted }}' .github/workflows/ci.yml

@@ -364,6 +364,8 @@ precheck_job() {
   ${PRECHECK_JOB}:
     uses: ${ORG_REPO}/.github/workflows/precheck.yml@${REF}
     permissions:
+      contents: read
+      checks: read
       pull-requests: read
 EOF
 }
@@ -372,7 +374,7 @@ checks_job() {
 	cat <<EOF
   ${CHECKS_JOB}:
     needs: ${PRECHECK_JOB}
-    if: needs.${PRECHECK_JOB}.outputs.proceed == 'true'
+    if: needs.${PRECHECK_JOB}.outputs.review == 'true'
     uses: ${ORG_REPO}/.github/workflows/ci.yml@${REF}
     permissions:
       contents: read
