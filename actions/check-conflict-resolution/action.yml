@@ -20,7 +20,7 @@ inputs:
     required: false
     default: "CI Gate"
   github-token:
-    description: チェックを引くトークン (checks: read)
+    description: "チェックを引くトークン (checks: read)"
     required: false
     default: ${{ github.token }}
 
