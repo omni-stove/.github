@@ -28,7 +28,7 @@ inputs:
     required: false
     default: ""
   github-token:
-    description: PR のレビューを読むトークン (pull-requests: read)
+    description: "PR のレビューを読むトークン (pull-requests: read)"
     required: false
     default: ${{ github.token }}
   has-agent-app:
