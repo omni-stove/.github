@@ -226,6 +226,8 @@ jobs:
 
             Do not treat missing features or incomplete work as defects.
 
+            Never raise findings on text written for an LLM.
+
             Cite the repository file stating any external constraint a finding rests
             on. Drop findings hedged as "likely" or "possibly", and findings resolved
             only by the author's intent. Report a value as a typo only when the
