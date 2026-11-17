@@ -114,6 +114,7 @@ install.sh が作る。手で作るときは次のとおり。
 `skip-autofix`、載っている人がその PR だけ任せるなら `force-autofix` を付ける。
 
 自動マージ (`run-merge`、install.sh の `--auto-merge`) は CI Gate が通り approve した PR を agent App のトークンでマージする。
+コンフリクトを解消しただけの push ではレビューを飛ばすので、reviewer の最新の判定が approve ならマージする。
 PR 1 件だけ止めるなら `skip-automerge` を付ける (`prototype` ラベルと draft の PR もマージしない)。
 
 ### lockfile / 生成物の作り直し

@@ -3,6 +3,7 @@ description: |
   CI Gate を通った PR を自動マージ (ci-gate.yml の merge ジョブ) するかを決める。
   fork / draft の PR、skip-automerge / prototype ラベルの PR、自動修正がこれから push する run、
   finalize の判定が approve でない run、agent App の secrets が無いときはマージしない。
+  コンフリクトを解消しただけの run では reviewer が PR に出した最新の判定を見る。
   判定のロジックとテストは decide-merge.sh / decide-merge.bats を参照。
 
 inputs:
@@ -18,6 +19,18 @@ inputs:
     description: finalize が提出した判定 (approve | request-changes)
     required: false
     default: ""
+  resolution-only:
+    description: コンフリクトを解消しただけの run なら 'true' (precheck.yml の resolution-only)
+    required: false
+    default: "false"
+  reviewer-login:
+    description: finalize が提出に使う reviewer の login (resolution-only のときに最新の判定を引く)
+    required: false
+    default: ""
+  github-token:
+    description: PR のレビューを読むトークン (pull-requests: read)
+    required: false
+    default: ${{ github.token }}
   has-agent-app:
     description: AGENT_GH_APP_ID / AGENT_GH_APP_PRIVATE_KEY があれば 'true'
     required: false
@@ -47,5 +60,9 @@ runs:
         SHOULD_FIX: ${{ inputs.should-fix }}
         FINALIZE: ${{ inputs.finalize }}
         DECISION: ${{ inputs.decision }}
+        RESOLUTION_ONLY: ${{ inputs.resolution-only }}
+        REVIEWER_LOGIN: ${{ inputs.reviewer-login }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_TOKEN: ${{ inputs.github-token }}
         HAS_AGENT_APP: ${{ inputs.has-agent-app }}
       run: bash "$GITHUB_ACTION_PATH/decide-merge.sh"

@@ -7,6 +7,8 @@
 #   - 自動修正がこれから push する (SHOULD_FIX=true) ならマージしない。修正後の CI でまた判定する
 #   - finalize を使う (FINALIZE=true) なら、提出した判定が approve のときだけマージする。CI Gate は lint / test の
 #     結果だけで通るため、レビュー指摘で request-changes を出した PR も通ってしまう
+#   - コンフリクトを解消しただけの run (RESOLUTION_ONLY=true) は Code Review を飛ばして判定を提出しないので、
+#     reviewer が PR に出した最新の判定で決める。解消で変わったのはコンフリクトしたパスだけで、その判定の対象と同じ差分のため
 #   - マージに使う agent App が無いときはマージしない
 #
 # 入力 (環境変数):
@@ -18,6 +20,10 @@
 #   SHOULD_FIX     - 自動修正を起動するなら 'true'
 #   FINALIZE       - finalize を使うなら 'true'
 #   DECISION       - finalize が提出した判定 (approve | request-changes。提出していなければ空)
+#   RESOLUTION_ONLY - コンフリクトを解消しただけの run なら 'true'
+#   REVIEWER_LOGIN - finalize が提出に使う reviewer の login (RESOLUTION_ONLY のときに最新の判定を引く)
+#   PR_NUMBER      - PR 番号 (同上)
+#   GH_CMD         - gh コマンド (既定: gh)
 #   HAS_AGENT_APP  - agent App の secrets があれば 'true'
 #   GITHUB_OUTPUT  - 出力先 (should_merge)
 set -euo pipefail
@@ -26,6 +32,7 @@ set -euo pipefail
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
 
 PR_REPO="${PR_REPO:-$REPO}"
+GH_CMD="${GH_CMD:-gh}"
 PR_LABELS_JSON="${PR_LABELS_JSON:-}"
 SKIP_LABELS="${SKIP_LABELS-skip-automerge,prototype}"
 
@@ -55,6 +62,15 @@ while IFS= read -r label; do
 done <<<"$(printf '%s' "$SKIP_LABELS" | tr ',' '\n')"
 
 [ "${SHOULD_FIX:-}" != "true" ] || no_merge "Auto-fix will push; not auto-merging this run."
+
+# 読めなければ判定なしとしてマージしない。COMMENTED はインラインコメントの投稿で、判定ではないので外す。
+if [ "${FINALIZE:-}" = "true" ] && [ "${RESOLUTION_ONLY:-}" = "true" ] && [ -z "${DECISION:-}" ]; then
+  state="$("${GH_CMD}" api --paginate "repos/${REPO}/pulls/${PR_NUMBER:-}/reviews" \
+    --jq ".[] | select(.user.login == \"${REVIEWER_LOGIN:-}\") | select(.state != \"COMMENTED\") | .state" \
+    2>/dev/null | tail -n 1)" || state=""
+  echo "Conflict-resolution-only run; the latest review by ${REVIEWER_LOGIN:-?} is ${state:-none}."
+  [ "$state" != "APPROVED" ] || DECISION=approve
+fi
 
 if [ "${FINALIZE:-}" = "true" ] && [ "${DECISION:-}" != "approve" ]; then
   no_merge "Review decision is '${DECISION:-none}', not approve; not auto-merging."

@@ -7,6 +7,16 @@ setup() {
   : > "$GITHUB_OUTPUT"
   export REPO=o/r PR_REPO=o/r HAS_AGENT_APP=true FINALIZE=true DECISION=approve
   SCRIPT="${BATS_TEST_DIRNAME}/decide-merge.sh"
+  export REVIEWS="${ROOT}/reviews.json" PR_NUMBER=5 REVIEWER_LOGIN='rev[bot]'
+  mkdir -p "${ROOT}/bin"
+  cat > "${ROOT}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[ -f "$REVIEWS" ] || exit 1
+while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done
+jq -r "$2" "$REVIEWS"
+EOF
+  chmod +x "${ROOT}/bin/gh"
+  export GH_CMD="${ROOT}/bin/gh"
 }
 
 teardown() {
@@ -68,4 +78,26 @@ teardown() {
   HAS_AGENT_APP=false run bash "$SCRIPT"
   grep -qx 'should_merge=false' "$GITHUB_OUTPUT"
   [[ "$output" == *"::warning::"* ]]
+}
+
+@test "a conflict-resolution-only run merges when the reviewer's latest decision is approve" {
+  echo '[{"user":{"login":"rev[bot]"},"state":"CHANGES_REQUESTED"},{"user":{"login":"rev[bot]"},"state":"APPROVED"},{"user":{"login":"rev[bot]"},"state":"COMMENTED"},{"user":{"login":"human"},"state":"CHANGES_REQUESTED"}]' > "$REVIEWS"
+  RESOLUTION_ONLY=true DECISION= run bash "$SCRIPT"
+  grep -qx 'should_merge=true' "$GITHUB_OUTPUT"
+}
+
+@test "a conflict-resolution-only run does not merge when the reviewer's latest decision is not approve" {
+  echo '[{"user":{"login":"rev[bot]"},"state":"APPROVED"},{"user":{"login":"rev[bot]"},"state":"CHANGES_REQUESTED"}]' > "$REVIEWS"
+  RESOLUTION_ONLY=true DECISION= run bash "$SCRIPT"
+  grep -qx 'should_merge=false' "$GITHUB_OUTPUT"
+  : > "$GITHUB_OUTPUT"
+  echo '[{"user":{"login":"other[bot]"},"state":"APPROVED"}]' > "$REVIEWS"
+  RESOLUTION_ONLY=true DECISION= run bash "$SCRIPT"
+  grep -qx 'should_merge=false' "$GITHUB_OUTPUT"
+}
+
+@test "a conflict-resolution-only run does not merge when the reviews cannot be read" {
+  RESOLUTION_ONLY=true DECISION= run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'should_merge=false' "$GITHUB_OUTPUT"
 }

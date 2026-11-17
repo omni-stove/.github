@@ -8,7 +8,8 @@ name: CI Gate
 # - needs のどれかが failure / cancelled なら失敗する (skipped は失敗ではない)。hotfix / revert の
 #   緊急避難口は ci-gate アクションが判定して素通しの success にする。
 # - CI Gate を通った head のコンフリクトを解消しただけの push (precheck.yml の resolution-only) では Code Review を
-#   飛ばしているので、approve / request-changes を提出しない。lint / test の失敗の自動修正はする。
+#   飛ばしているので、approve / request-changes を提出しない。lint / test の失敗の自動修正はする。run-merge では
+#   reviewer が PR に出した最新の判定が approve ならマージする。
 # - finalize は lint / test の結果とレビュー指摘から approve / request-changes を提出する。
 # - run-fix なら同じ統合結果から自動修正 (agent-fix.yml) を起動する。lint / test が落ちていれば
 #   trigger=ci、レビュー指摘があれば trigger=review。修正の push で CI が再実行され、その結果がまた戻る。
@@ -189,11 +190,11 @@ jobs:
           echo "list=${list}" >> "$GITHUB_OUTPUT"
           echo "job results: ${list}"
 
+      # コンフリクトの解消だけの run でも、自動マージの判定に reviewer の login が要るので生成する。
       - name: Generate reviewer App token
         id: reviewer-token
         if: >-
           env.FINALIZE == 'true' && steps.results.outcome == 'success' && inputs.finalize && env.HAS_REVIEWER_APP == 'true'
-          && steps.resolution.outputs.only != 'true'
         continue-on-error: true
         uses: omni-stove/.github/actions/github-app-token@main
         with:
@@ -244,6 +245,8 @@ jobs:
           should-fix: ${{ steps.decide-fix.outputs.should-fix || 'false' }}
           finalize: ${{ inputs.finalize }}
           decision: ${{ steps.finalize.outputs.decision }}
+          resolution-only: ${{ steps.resolution.outputs.only }}
+          reviewer-login: ${{ steps.reviewer-token.outputs.bot-login || 'github-actions[bot]' }}
           has-agent-app: ${{ env.HAS_AGENT_APP }}
 
       - name: Generate agent App token for the regeneration
