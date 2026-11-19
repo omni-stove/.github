@@ -253,6 +253,8 @@ runs:
       run: |
         if [ "${RATE_LIMITED}" = "true" ]; then
           echo "::error::GitHub API のレート制限で Claude を実行できませんでした。"
+        else
+          echo "::error::Claude の実行が失敗しました。原因は Run Claude Code ステップのログを確認してください。"
         fi
         exit 1
 

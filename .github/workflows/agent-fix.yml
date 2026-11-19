@@ -57,9 +57,9 @@ on:
         type: string
         default: ""
       max-turns:
-        description: エージェントの最大ターン数 (--max-turns)
+        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ
         type: string
-        default: "40"
+        default: ""
       allowed-bots:
         description: bot が起こした run でもエージェントを走らせる bot 名 (カンマ区切り。'*' で全て)
         type: string
@@ -161,7 +161,6 @@ jobs:
           model: ${{ inputs.model }}
           effort: ${{ inputs.effort }}
           allowed-bots: ${{ inputs.allowed-bots }}
-          extra-claude-args: "--max-turns ${{ inputs.max-turns }}"
           rate-limit-retry-max-wait-seconds: "900"
           allowed-tools: "Read,Edit,Write,NotebookEdit,Glob,Grep"
           disallowed-tools: "Bash,WebFetch,WebSearch,Task,Agent,Skill"
@@ -222,7 +221,6 @@ jobs:
           model: ${{ inputs.model }}
           effort: ${{ inputs.effort }}
           allowed-bots: ${{ inputs.allowed-bots }}
-          extra-claude-args: "--max-turns ${{ inputs.max-turns }}"
           # App のレート制限は他の workflow と共有で枯渇しやすいので、timeout-minutes に収まる 15 分まで待つ。
           rate-limit-retry-max-wait-seconds: "900"
           allowed-tools: "Read,Edit,Write,NotebookEdit,Glob,Grep"

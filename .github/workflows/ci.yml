@@ -69,9 +69,9 @@ on:
         type: string
         default: ""
       review-max-turns:
-        description: レビューの最大ターン数 (--max-turns)
+        description: 使わない。渡している呼び出し側を壊さないよう受け取るだけ
         type: string
-        default: "80"
+        default: ""
       review-allowed-bots:
         description: >
           bot が作った PR でもレビューを走らせる bot 名 (カンマ区切り。'*' で全て)。
@@ -182,7 +182,6 @@ jobs:
           allowed-bots: ${{ inputs.review-allowed-bots }}
           disallowed-tools: "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent,TodoWrite"
           system-prompt: "Always output in Japanese."
-          extra-claude-args: "--max-turns ${{ inputs.review-max-turns }}"
           json-schema: '{"type":"object","properties":{"comments":{"type":"array","description":"修正必須の指摘。","items":{"type":"object","properties":{"path":{"type":"string","description":"変更行を含むファイル。"},"line":{"type":"integer","description":"対象の追加行。"},"category":{"type":"string","enum":["security","correctness","performance","consistency"],"description":"主因。複数なら影響が最大のもの。"},"body":{"type":"string","description":"指摘。security は該当する OWASP Top 10 / CWE 項目で始める。特定できない番号は書かない。"}},"required":["path","line","category","body"],"additionalProperties":false}}},"required":["comments"],"additionalProperties":false}'
           prompt: |
             <pr_description>
