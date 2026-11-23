@@ -115,6 +115,7 @@ jobs:
     outputs:
       mode: ${{ steps.resolve.outputs.mode }}
       branch: ${{ steps.resolve.outputs.branch }}
+      title: ${{ steps.resolve.outputs.title }}
       draft: ${{ steps.resolve.outputs.draft }}
       pr-labels: ${{ steps.resolve.outputs.pr-labels }}
       scope-label: ${{ steps.resolve.outputs.scope-label }}
@@ -159,7 +160,7 @@ jobs:
       # secrets は if で参照できないため env に落としてから step の if で見る。
       HAS_AGENT_APP: ${{ secrets.AGENT_GH_APP_ID != '' && secrets.AGENT_GH_APP_PRIVATE_KEY != '' }}
     outputs:
-      pr-url: ${{ steps.pr.outputs.pr-url }}
+      pr-url: ${{ steps.adopt.outputs.pr-url || steps.pr.outputs.pr-url }}
     steps:
       - name: Generate agent App token
         id: app
@@ -179,10 +180,24 @@ jobs:
         id: start
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # 前の run が push したまま PR を作れずに終わったブランチがあれば、エージェントをやり直さずにそれを PR にする。
+      - name: Adopt existing branch
+        id: adopt
+        uses: omni-stove/.github/actions/adopt-issue-branch@main
+        with:
+          branch: ${{ needs.resolve.outputs.branch }}
+          base: ${{ inputs.base-branch || github.event.repository.default_branch }}
+          issue-number: ${{ needs.resolve.outputs.number }}
+          title: ${{ needs.resolve.outputs.title }}
+          labels: ${{ needs.resolve.outputs.pr-labels }} ${{ needs.resolve.outputs.scope-label }}
+          draft: ${{ needs.resolve.outputs.draft }}
+          github-token: ${{ steps.app.outputs.token || github.token }}
+
       # commit / push / PR 作成は後段の step が握るので、エージェントには編集だけさせる。
       # 構造化出力は PR の文面になる。
       - name: Run agent
         id: agent
+        if: steps.adopt.outputs.pr-url == ''
         uses: omni-stove/.github/actions/agent-run@main
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -216,7 +231,7 @@ jobs:
       # エージェントが落ちても、残った編集を draft PR にするか Issue に失敗を書くため、!cancelled() で走らせる。
       - name: Create PR
         id: pr
-        if: ${{ !cancelled() && steps.start.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.start.outcome == 'success' && steps.adopt.outcome == 'success' && steps.adopt.outputs.pr-url == '' }}
         uses: omni-stove/.github/actions/create-issue-pr@main
         with:
           structured: ${{ steps.agent.outputs.structured-output }}

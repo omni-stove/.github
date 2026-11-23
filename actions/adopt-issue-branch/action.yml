@@ -1,0 +1,56 @@
+name: Adopt Issue Branch
+description: |
+  Issue Worker のブランチが前の run で push されたまま PR になっていなければ、エージェントを走らせずに
+  そのブランチを PR にする。open / closed / merged いずれかの PR が既にあるブランチは採用しない。
+  ロジックとテストは adopt-issue-branch.sh / adopt-issue-branch.bats を参照。
+
+inputs:
+  branch:
+    description: Issue Worker の head ブランチ名
+    required: true
+  base:
+    description: PR の base ブランチ名
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+  issue-number:
+    description: 対象 Issue 番号。PR から Closes で参照する
+    required: true
+  title:
+    description: PR の title にする Issue のタイトル
+    required: true
+  labels:
+    description: PR に付けるラベル (スペース区切り)
+    required: false
+    default: ""
+  draft:
+    description: "'true' なら draft PR にする"
+    required: false
+    default: "false"
+  github-token:
+    description: PR 作成に使うトークン。github.token で作った PR では pull_request の workflow が起動しない
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  pr-url:
+    description: 採用して作った PR の URL。採用しなかったときは空
+    value: ${{ steps.adopt.outputs.pr_url }}
+  pr-number:
+    description: PR 番号。採用しなかったときは空
+    value: ${{ steps.adopt.outputs.pr_number }}
+
+runs:
+  using: composite
+  steps:
+    - name: Adopt the existing branch
+      id: adopt
+      shell: bash
+      env:
+        BRANCH: ${{ inputs.branch }}
+        BASE: ${{ inputs.base }}
+        ISSUE: ${{ inputs.issue-number }}
+        TITLE: ${{ inputs.title }}
+        LABELS: ${{ inputs.labels }}
+        DRAFT: ${{ inputs.draft }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/adopt-issue-branch.sh"
