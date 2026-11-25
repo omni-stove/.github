@@ -53,4 +53,5 @@ runs:
         LABELS: ${{ inputs.labels }}
         DRAFT: ${{ inputs.draft }}
         GH_TOKEN: ${{ inputs.github-token }}
+        PUSH_TOKEN: ${{ inputs.github-token }}
       run: bash "$GITHUB_ACTION_PATH/adopt-issue-branch.sh"

@@ -14,7 +14,11 @@
 # 環境変数:
 #   GIT_USER_NAME / GIT_USER_EMAIL - git identity が未設定のときに使う
 #   GH_TOKEN                       - gh 認証用
+#   PUSH_TOKEN                     - git の fetch / push に使うトークン (空なら既存の認証を使う。git-auth.sh)
 set -euo pipefail
+
+# shellcheck source=actions/create-issue-pr/git-auth.sh
+source "$(dirname "${BASH_SOURCE[0]}")/git-auth.sh"
 
 if [[ $# -lt 5 ]]; then
   echo "usage: create-pr.sh <branch> <base> <message> <title> <body> [--label <name>]... [--draft]" >&2

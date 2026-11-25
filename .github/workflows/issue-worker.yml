@@ -43,7 +43,7 @@ on:
       allowed-tools:
         description: エージェントに許可するツール (Claude 形式、カンマ区切り)
         type: string
-        default: "Read,Edit,Write,NotebookEdit,Glob,Grep,Bash(pnpm:*),Bash(npm:*),Bash(make:*),Bash(git:*),Bash(gh:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(rg:*),Bash(node:*),Bash(npx:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(rm:*)"
+        default: "Read,Edit,Write,NotebookEdit,Glob,Grep,Bash(git:*),Bash(gh:*),Bash(ls:*),Bash(cat:*),Bash(find:*),Bash(rg:*),Bash(mkdir:*),Bash(mv:*),Bash(cp:*),Bash(rm:*)"
       allowed-bots:
         description: bot が付けたラベルでも起動する bot 名 (カンマ区切り)。公開リポジトリでは bot 名を列挙するか "" にする
         type: string
@@ -174,7 +174,8 @@ jobs:
         with:
           # エージェントが git log で経緯を辿れるように全履歴を取る。
           fetch-depth: 0
-          token: ${{ steps.app.outputs.token || github.token }}
+          # エージェントが書き込みトークンを読めないよう残さない。fetch / push には adopt-issue-branch と create-issue-pr が渡す。
+          persist-credentials: false
 
       - name: Record the starting commit
         id: start

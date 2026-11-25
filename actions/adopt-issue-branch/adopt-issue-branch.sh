@@ -15,6 +15,7 @@
 #   LABELS   - PR に付けるラベル (スペース区切り、任意)
 #   DRAFT    - "true" なら draft PR にする (任意)
 #   GH_TOKEN - gh 認証用
+#   PUSH_TOKEN - git の ls-remote / fetch に使うトークン (空なら既存の認証を使う。git-auth.sh)
 #   GH_CMD   - テストで gh を差し替える (既定: gh)
 # 出力 (GITHUB_OUTPUT があれば): pr_url / pr_number (採用しなかったときは空)
 set -euo pipefail
@@ -26,6 +27,8 @@ set -euo pipefail
 
 GH_CMD="${GH_CMD:-gh}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=actions/create-issue-pr/git-auth.sh
+source "${SCRIPT_DIR}/../create-issue-pr/git-auth.sh"
 
 output() {
   [ -n "${GITHUB_OUTPUT:-}" ] || return 0

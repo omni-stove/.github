@@ -145,3 +145,17 @@ teardown() {
   [ "$status" -eq 1 ]
   ! grep -q "pr create" "$GH_LOG"
 }
+
+@test "PUSH_TOKEN authenticates git through the environment and leaves the repository config alone" {
+  echo change > file.txt
+  PUSH_TOKEN=secret-token run bash "$SCRIPT" feature main "msg" "title" "body"
+  [ "$status" -eq 0 ]
+  git -C "${ROOT}/origin.git" rev-parse -q --verify refs/heads/feature
+  ! grep -rq 'extraheader\|c2VjcmV0' .git/config
+}
+
+@test "PUSH_TOKEN is not added on top of credentials the checkout left behind" {
+  git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic persisted"
+  run bash -c 'PUSH_TOKEN=secret-token; source "$1"; echo "count=${GIT_CONFIG_COUNT:-0}"' _ "${BATS_TEST_DIRNAME}/git-auth.sh"
+  [ "$output" = "count=0" ]
+}

@@ -20,6 +20,7 @@
 #   AGENT_OUTCOME  - エージェントのステップの outcome (既定: success)。success 以外なら、変更があれば
 #                    draft PR にし、無ければ Issue に失敗を書いて非ゼロで終える
 #   GH_TOKEN       - gh 認証用
+#   PUSH_TOKEN     - git の fetch / push に使うトークン (空なら既存の認証を使う。create-pr.sh に渡る)
 #   GH_CMD / CREATE_PR_CMD - テストで差し替える (既定: gh / 隣の create-pr.sh)
 # 出力 (GITHUB_OUTPUT があれば): pr_url / pr_number (PR を作らなかったときは空)、
 #   follow_up_issue_url (後続 Issue を起こさなかったときは空)
